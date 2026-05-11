@@ -1,0 +1,15 @@
+# IDE / tooling
+.idea/
+.vscode/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Snapshots — generowane lokalnie przy pierwszym docker compose up
+snapshots/*
+!snapshots/.gitkeep
+
+# WordPress runtime — wszystko siedzi w named volume, nie commitujemy
+wordpress/
