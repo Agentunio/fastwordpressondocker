@@ -27,6 +27,7 @@ services:
       - "80:80"
     volumes:
       - wp_data:/var/www/html
+      - ./wp-content:/var/www/html/wp-content
       - ./scripts:/scripts:ro
       - ./plugins:/plugins:ro
       - ./snapshots:/snapshots

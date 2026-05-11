@@ -13,3 +13,6 @@ snapshots/*
 
 # WordPress runtime — wszystko siedzi w named volume, nie commitujemy
 wordpress/
+
+# wp-content jest bind-mountowany do kontenera, traktujemy jako runtime
+wp-content/
