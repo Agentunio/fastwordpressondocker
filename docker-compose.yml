@@ -34,6 +34,19 @@ services:
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]
 
+  phpmyadmin:
+    image: phpmyadmin:5
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PMA_HOST: db
+      PMA_USER: wp
+      PMA_PASSWORD: wp
+      UPLOAD_LIMIT: 256M
+    ports:
+      - "8080:80"
+
 volumes:
   db_data:
   wp_data:
