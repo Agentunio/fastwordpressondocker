@@ -5,11 +5,12 @@ Lokalne środowisko WordPress w Dockerze ze snapshotem stanu bazowego (`state-0`
 ## Wymagania
 
 - Docker Desktop
-- PowerShell (dla wrapperów `.ps1`)
+- macOS / Linux → wrappery `.sh` (działają w `bash`/`zsh`)
+- Windows → wrappery `.ps1` (PowerShell)
 
 ## Quickstart
 
-```powershell
+```bash
 docker compose up -d
 ```
 
@@ -27,17 +28,21 @@ Kolejne `docker compose up` — startuje natychmiast, init wykrywa zainstalowane
 
 ## Komendy
 
-### `./reset.ps1` — przywróć state-0
+> macOS / Linux → `./reset.sh`, `./snapshot.sh`
+> Windows → `./reset.ps1`, `./snapshot.ps1`
+> Oba warianty robią to samo — to tylko wrappery na te same `scripts/*.sh` w kontenerze.
+
+### `./reset.sh` (`./reset.ps1`) — przywróć state-0
 
 Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`.
 
-Pod spodem: `docker compose exec wordpress bash /scripts/reset.sh`
+Pod spodem: `docker compose exec -T wordpress bash /scripts/reset.sh`
 
-### `./snapshot.ps1` — nadpisz state-0
+### `./snapshot.sh` (`./snapshot.ps1`) — nadpisz state-0
 
 Zapisuje **aktualny** stan WordPressa jako nowy state-0. Używaj gdy świadomie zmieniasz stan bazowy (dodajesz wtyczkę/motyw, który ma być w punkcie wyjścia).
 
-Pod spodem: `docker compose exec wordpress bash /scripts/snapshot.sh`
+Pod spodem: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 
 ## Co robi co
 
@@ -45,8 +50,8 @@ Pod spodem: `docker compose exec wordpress bash /scripts/snapshot.sh`
 |---|---|---|
 | `scripts/entrypoint.sh` | Start kontenera | Wrapper — odpala `init.sh` w tle i przekazuje sterowanie do oryginalnego entrypointu WP |
 | `scripts/init.sh` | Start kontenera (w tle) | Jeśli WP już zainstalowany → nic. Jeśli istnieje snapshot → `reset.sh`. Jeśli pusto → fresh install + pluginy + zapis state-0 |
-| `scripts/reset.sh` | `./reset.ps1` lub init z istniejącym snapshotem | Resetuje DB + przywraca `wp-content` + `wp-config.php` ze snapshotu |
-| `scripts/snapshot.sh` | `./snapshot.ps1` | Eksportuje DB + pakuje `wp-content` + kopiuje `wp-config.php` do `snapshots/` |
+| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` lub init z istniejącym snapshotem | Resetuje DB + przywraca `wp-content` + `wp-config.php` ze snapshotu |
+| `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | Eksportuje DB + pakuje `wp-content` + kopiuje `wp-config.php` do `snapshots/` |
 
 ## Pluginy
 
@@ -70,8 +75,8 @@ scripts/
   reset.sh                # przywrócenie state-0
 snapshots/                # state-0.* — generowane lokalnie, gitignored
 plugins/                  # *.zip — premium pluginy, instalowane przy fresh install
-snapshot.ps1              # PS wrapper dla snapshot.sh
-reset.ps1                 # PS wrapper dla reset.sh
+reset.sh / reset.ps1      # wrapper dla scripts/reset.sh    (mac/linux / windows)
+snapshot.sh / snapshot.ps1 # wrapper dla scripts/snapshot.sh (mac/linux / windows)
 ```
 
 Cały WordPress (core + wp-content + DB) siedzi w named volumes (`wp_data`, `db_data`), nie w gicie. Czyściwa: `docker compose down -v` usuwa wszystko.
@@ -80,6 +85,21 @@ Cały WordPress (core + wp-content + DB) siedzi w named volumes (`wp_data`, `db_
 
 1. `git clone` + `docker compose up -d` — start (fresh install + auto state-0)
 2. Klikasz/testujesz/psujesz WordPressa
-3. `./reset.ps1` — wracasz do state-0
-4. Gdy chcesz **zmienić** punkt wyjścia → `./snapshot.ps1`
+3. `./reset.sh` (Windows: `./reset.ps1`) — wracasz do state-0
+4. Gdy chcesz **zmienić** punkt wyjścia → `./snapshot.sh` (Windows: `./snapshot.ps1`)
 5. Pełny reset (z wyczyszczeniem volumes): `docker compose down -v && docker compose up -d`
+
+## Troubleshooting
+
+**`./reset.sh` rzuca `command not found` w połowie skryptu (np. `ch: command not found`)**
+Docker Desktop na macOS (VirtioFS) potrafi serwować w kontenerze nieświeżą/uciętą wersję pliku z bind-mountu `scripts/` po jego edycji na hoście. Wymuś ponowne wczytanie:
+
+```bash
+docker compose restart wordpress
+```
+
+Sanity-check, że kontener widzi ten sam rozmiar pliku co host:
+
+```bash
+docker compose exec -T wordpress wc -c /scripts/reset.sh && wc -c scripts/reset.sh
+```

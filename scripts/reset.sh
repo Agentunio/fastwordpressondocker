@@ -14,8 +14,9 @@ wp --allow-root db reset --yes
 wp --allow-root db import /snapshots/state-0.sql
 
 echo "Wiping wp-content..."
-rm -rf /var/www/html/wp-content
-mkdir -p /var/www/html/wp-content
+# wp-content to bind-mount (punkt montowania) — nie da sie usunac samego katalogu,
+# czyscimy tylko jego zawartosc (lacznie z plikami ukrytymi)
+find /var/www/html/wp-content -mindepth 1 -delete
 
 echo "Restoring wp-content from snapshot..."
 tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
