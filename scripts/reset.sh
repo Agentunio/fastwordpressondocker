@@ -33,6 +33,9 @@ wp --allow-root core update-db
 echo "Updating All-in-One WP Migration to latest version..."
 wp --allow-root plugin install all-in-one-wp-migration --force --activate
 
+echo "Updating Advanced Custom Fields to latest version..."
+wp --allow-root plugin install advanced-custom-fields --force --activate
+
 shopt -s nullglob
 for zip in /plugins/*.zip; do
     echo "Refreshing premium plugin from local zip: $zip"

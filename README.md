@@ -34,7 +34,7 @@ Kolejne `docker compose up` — startuje natychmiast, init wykrywa zainstalowane
 
 ### `./reset.sh` (`./reset.ps1`) — przywróć state-0 i odśwież wersje
 
-Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`, a następnie pobiera najnowszego WordPressa i najnowszą darmową wersję **All-in-One WP Migration** z wordpress.org. Premium ZIP-y z `plugins/` są przeinstalowywane z lokalnych plików.
+Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`, a następnie pobiera najnowszego WordPressa oraz najnowsze darmowe wersje **ACF** i **All-in-One WP Migration** z wordpress.org. Premium ZIP-y z `plugins/` są przeinstalowywane z lokalnych plików.
 
 Pod spodem: `docker compose exec -T wordpress bash /scripts/reset.sh`
 
