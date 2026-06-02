@@ -7,6 +7,9 @@
 .DS_Store
 Thumbs.db
 
+# Local Docker overrides
+.env
+
 # Snapshots — generowane lokalnie przy pierwszym docker compose up
 snapshots/*
 !snapshots/.gitkeep

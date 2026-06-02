@@ -2,6 +2,7 @@
 set -e
 
 cd /var/www/html
+WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 
 # Wait until WP core files are copied in by the official entrypoint
 for i in $(seq 1 60); do
@@ -33,7 +34,7 @@ echo "[init] Downloading latest WordPress core..."
 wp --allow-root core download --force --skip-content
 
 wp --allow-root core install \
-    --url="http://localhost" \
+    --url="$WORDPRESS_URL" \
     --title="Test WordPress" \
     --admin_user='admin_qmpgfd' \
     --admin_password='R40U8zp17YlwvQNkDEKgnhx2!@#' \

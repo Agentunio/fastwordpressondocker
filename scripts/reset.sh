@@ -8,10 +8,13 @@ if [ ! -f /snapshots/state-0.sql ] || [ ! -f /snapshots/state-0-wp-content.tar.g
 fi
 
 cd /var/www/html
+WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 
 echo "Resetting database..."
 wp --allow-root db reset --yes
 wp --allow-root db import /snapshots/state-0.sql
+wp --allow-root option update home "$WORDPRESS_URL"
+wp --allow-root option update siteurl "$WORDPRESS_URL"
 
 echo "Wiping wp-content..."
 # wp-content to bind-mount (punkt montowania) — nie da sie usunac samego katalogu,

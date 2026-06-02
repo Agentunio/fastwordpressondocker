@@ -26,6 +26,24 @@ Po starcie:
 
 Kolejne `docker compose up` — startuje natychmiast, init wykrywa zainstalowanego WP i kończy.
 
+### Równoległy start kilku kopii
+
+Domyślnie WordPress działa na porcie `80`, a phpMyAdmin na `8080`. Jeśli odpalasz drugi checkout tego projektu obok pierwszego, utwórz w nim lokalny plik `.env`:
+
+```bash
+WORDPRESS_PORT=3001
+WORDPRESS_URL=http://localhost:3001
+PHPMYADMIN_PORT=7778
+```
+
+Potem uruchom:
+
+```bash
+docker compose up -d
+```
+
+`WORDPRESS_URL` musi zawierać ten sam port co `WORDPRESS_PORT`, inaczej WordPress może przekierowywać na adres bez portu.
+
 ## Komendy
 
 > macOS / Linux → `./reset.sh`, `./snapshot.sh`
