@@ -16,7 +16,7 @@ docker compose up -d
 
 Pierwszy start (~1 min):
 - pobranie obrazów + build (Dockerfile dorzuca `wp-cli` do oficjalnego obrazu WordPress)
-- `init.sh` instaluje WP, pluginy (ACF + AIO Migration + AIO Migration Pro), zapisuje snapshot `state-0`
+- `init.sh` pobiera najnowszego WordPressa, instaluje pluginy (ACF + AIO Migration + AIO Migration Pro), zapisuje snapshot `state-0`
 
 Po starcie:
 - WordPress: http://localhost
@@ -32,9 +32,9 @@ Kolejne `docker compose up` — startuje natychmiast, init wykrywa zainstalowane
 > Windows → `./reset.ps1`, `./snapshot.ps1`
 > Oba warianty robią to samo — to tylko wrappery na te same `scripts/*.sh` w kontenerze.
 
-### `./reset.sh` (`./reset.ps1`) — przywróć state-0
+### `./reset.sh` (`./reset.ps1`) — przywróć state-0 i odśwież wersje
 
-Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`.
+Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`, a następnie pobiera najnowszego WordPressa i najnowszą darmową wersję **All-in-One WP Migration** z wordpress.org. Premium ZIP-y z `plugins/` są przeinstalowywane z lokalnych plików.
 
 Pod spodem: `docker compose exec -T wordpress bash /scripts/reset.sh`
 

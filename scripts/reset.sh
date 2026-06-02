@@ -26,4 +26,20 @@ cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
 chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
 
-echo "Reset complete. Everything back to state 0."
+echo "Downloading latest WordPress core..."
+wp --allow-root core download --force --skip-content
+wp --allow-root core update-db
+
+echo "Updating All-in-One WP Migration to latest version..."
+wp --allow-root plugin install all-in-one-wp-migration --force --activate
+
+shopt -s nullglob
+for zip in /plugins/*.zip; do
+    echo "Refreshing premium plugin from local zip: $zip"
+    wp --allow-root plugin install "$zip" --force --activate
+done
+shopt -u nullglob
+
+chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
+
+echo "Reset complete. Restored state-0 and refreshed WordPress/All-in-One WP Migration."

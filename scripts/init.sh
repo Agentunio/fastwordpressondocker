@@ -29,6 +29,9 @@ if [ -f /snapshots/state-0.sql ] && [ -f /snapshots/state-0-wp-content.tar.gz ] 
 fi
 
 echo "[init] Fresh install..."
+echo "[init] Downloading latest WordPress core..."
+wp --allow-root core download --force --skip-content
+
 wp --allow-root core install \
     --url="http://localhost" \
     --title="Test WordPress" \
