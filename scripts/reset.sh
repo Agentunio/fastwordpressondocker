@@ -46,6 +46,8 @@ for zip in /plugins/*.zip; do
 done
 shopt -u nullglob
 
+bash /scripts/remove-default-plugins.sh
+
 chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
 
 echo "Reset complete. Restored state-0 and refreshed WordPress/All-in-One WP Migration."

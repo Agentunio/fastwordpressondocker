@@ -59,6 +59,8 @@ for zip in /plugins/*.zip; do
 done
 shopt -u nullglob
 
+bash /scripts/remove-default-plugins.sh
+
 echo "[init] Fixing wp-content ownership..."
 chown -R www-data:www-data /var/www/html/wp-content
 

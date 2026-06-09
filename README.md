@@ -16,7 +16,7 @@ docker compose up -d
 
 Pierwszy start (~1 min):
 - pobranie obrazów + build (Dockerfile dorzuca `wp-cli` do oficjalnego obrazu WordPress)
-- `init.sh` pobiera najnowszego WordPressa, instaluje pluginy (ACF + AIO Migration + AIO Migration Pro), zapisuje snapshot `state-0`
+- `init.sh` pobiera najnowszego WordPressa, instaluje pluginy (ACF + AIO Migration + AIO Migration Pro), usuwa domyślne Akismet/Hello Dolly i zapisuje snapshot `state-0`
 
 Po starcie:
 - WordPress: http://localhost
@@ -52,13 +52,13 @@ docker compose up -d
 
 ### `./reset.sh` (`./reset.ps1`) — przywróć state-0 i odśwież wersje
 
-Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`, a następnie pobiera najnowszego WordPressa oraz najnowsze darmowe wersje **ACF** i **All-in-One WP Migration** z wordpress.org. Premium ZIP-y z `plugins/` są przeinstalowywane z lokalnych plików.
+Cofa wszystko (baza + `wp-content` + `wp-config.php`) do stanu zapisanego jako `state-0`, a następnie pobiera najnowszego WordPressa oraz najnowsze darmowe wersje **ACF** i **All-in-One WP Migration** z wordpress.org. Premium ZIP-y z `plugins/` są przeinstalowywane z lokalnych plików. Domyślne **Akismet** i **Hello Dolly** są usuwane.
 
 Pod spodem: `docker compose exec -T wordpress bash /scripts/reset.sh`
 
 ### `./snapshot.sh` (`./snapshot.ps1`) — nadpisz state-0
 
-Zapisuje **aktualny** stan WordPressa jako nowy state-0. Używaj gdy świadomie zmieniasz stan bazowy (dodajesz wtyczkę/motyw, który ma być w punkcie wyjścia).
+Zapisuje **aktualny** stan WordPressa jako nowy state-0. Używaj gdy świadomie zmieniasz stan bazowy (dodajesz wtyczkę/motyw, który ma być w punkcie wyjścia). Przed zapisem usuwa domyślne **Akismet** i **Hello Dolly**.
 
 Pod spodem: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 
@@ -70,6 +70,7 @@ Pod spodem: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 | `scripts/init.sh` | Start kontenera (w tle) | Jeśli WP już zainstalowany → nic. Jeśli istnieje snapshot → `reset.sh`. Jeśli pusto → fresh install + pluginy + zapis state-0 |
 | `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` lub init z istniejącym snapshotem | Resetuje DB + przywraca `wp-content` + `wp-config.php` ze snapshotu |
 | `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | Eksportuje DB + pakuje `wp-content` + kopiuje `wp-config.php` do `snapshots/` |
+| `scripts/remove-default-plugins.sh` | `init.sh`, `reset.sh`, `snapshot.sh` | Usuwa domyślne wtyczki WordPressa: Akismet i Hello Dolly |
 
 ## Pluginy
 
@@ -77,6 +78,8 @@ Pod spodem: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 - **ACF** (free, z wp.org slug: `advanced-custom-fields`)
 - **All-in-One WP Migration** (free, z wp.org)
 - **All-in-One WP Migration Pro** (premium, z `plugins/all-in-one-wp-migration-pro.zip`)
+
+Domyślne wtyczki WordPressa — **Akismet** i **Hello Dolly** — są automatycznie usuwane przy fresh installu, resecie i zapisie state-0.
 
 Żeby dodać kolejny darmowy plugin → edytuj `FREE_PLUGINS=(...)` w `scripts/init.sh`.
 Żeby dodać kolejny premium → wrzuć `.zip` do `plugins/`.
@@ -91,6 +94,7 @@ scripts/
   init.sh                 # pierwsza instalacja / odtworzenie z state-0
   snapshot.sh             # zapis state-0
   reset.sh                # przywrócenie state-0
+  remove-default-plugins.sh # usuwanie Akismet i Hello Dolly
 snapshots/                # state-0.* — generowane lokalnie, gitignored
 plugins/                  # *.zip — premium pluginy, instalowane przy fresh install
 reset.sh / reset.ps1      # wrapper dla scripts/reset.sh    (mac/linux / windows)

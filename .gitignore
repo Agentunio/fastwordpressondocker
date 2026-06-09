@@ -19,3 +19,6 @@ wordpress/
 
 # wp-content jest bind-mountowany do kontenera, traktujemy jako runtime
 wp-content/
+
+AGENTS.md
+CLAUDE.md
