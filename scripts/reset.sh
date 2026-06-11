@@ -17,8 +17,6 @@ wp --allow-root option update home "$WORDPRESS_URL"
 wp --allow-root option update siteurl "$WORDPRESS_URL"
 
 echo "Wiping wp-content..."
-# wp-content to bind-mount (punkt montowania) — nie da sie usunac samego katalogu,
-# czyscimy tylko jego zawartosc (lacznie z plikami ukrytymi)
 find /var/www/html/wp-content -mindepth 1 -delete
 
 echo "Restoring wp-content from snapshot..."

@@ -1,4 +1,3 @@
-# IDE / tooling
 .idea/
 .vscode/
 .claude/
@@ -7,17 +6,16 @@
 .DS_Store
 Thumbs.db
 
-# Local Docker overrides
 .env
 
-# Snapshots — generowane lokalnie przy pierwszym docker compose up
 snapshots/*
 !snapshots/.gitkeep
 
-# WordPress runtime — wszystko siedzi w named volume, nie commitujemy
+plugins/*
+!plugins/.gitkeep
+
 wordpress/
 
-# wp-content jest bind-mountowany do kontenera, traktujemy jako runtime
 wp-content/
 
 AGENTS.md

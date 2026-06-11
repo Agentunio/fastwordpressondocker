@@ -4,13 +4,11 @@ set -e
 cd /var/www/html
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 
-# Wait until WP core files are copied in by the official entrypoint
 for i in $(seq 1 60); do
     [ -f wp-load.php ] && break
     sleep 1
 done
 
-# Wait for DB
 for i in $(seq 1 60); do
     wp --allow-root db check 2>/dev/null && break
     sleep 1
@@ -35,13 +33,15 @@ wp --allow-root core download --force --skip-content
 
 wp --allow-root core install \
     --url="$WORDPRESS_URL" \
-    --title="Test WordPress" \
+    --title="Fast WordPress on Docker" \
     --admin_user='admin_qmpgfd' \
     --admin_password='R40U8zp17YlwvQNkDEKgnhx2!@#' \
     --admin_email=admin@example.com \
     --skip-email
 
-# Free plugins from wp.org
+echo "[init] Installing default theme..."
+wp --allow-root theme install twentytwentyfive --activate
+
 FREE_PLUGINS=(
     "advanced-custom-fields"
     "all-in-one-wp-migration"
@@ -51,7 +51,6 @@ for slug in "${FREE_PLUGINS[@]}"; do
     wp --allow-root plugin install "$slug" --activate
 done
 
-# Premium plugins from /plugins/*.zip
 shopt -s nullglob
 for zip in /plugins/*.zip; do
     echo "[init] Installing premium plugin: $zip"
