@@ -8,7 +8,7 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 
 | Service | Image | Default URL |
 |---|---|---|
-| WordPress | `wordpress:php8.2-apache` + wp-cli (custom build) | http://localhost |
+| WordPress | `wordpress:php8.3-apache` + wp-cli (custom build) | http://localhost |
 | MariaDB | `mariadb:11` | — |
 | phpMyAdmin | `phpmyadmin:5` | http://localhost:8080 |
 
@@ -138,7 +138,7 @@ WordPress core and the database live in named Docker volumes (`wp_data`, `db_dat
 
 ```
 docker-compose.yml          # services: db (MariaDB 11), wordpress (custom build), phpmyadmin
-Dockerfile                  # wordpress:php8.2-apache + wp-cli + mariadb-client
+Dockerfile                  # wordpress:php8.3-apache + wp-cli + mariadb-client
 .env.example                # port/URL overrides (copy to .env)
 scripts/
   entrypoint.sh             # custom container entrypoint
