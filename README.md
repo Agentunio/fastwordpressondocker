@@ -20,8 +20,7 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 ## Quick start
 
 ```bash
-git clone https://github.com/Agentunio/fastwordpressondocker.git
-cd fastwordpressondocker
+git clone https://github.com/Agentunio/fastwordpressondocker.git .
 docker compose up -d
 ```
 
@@ -83,7 +82,7 @@ docker compose up -d
 
 ## Running multiple copies in parallel
 
-Every clone of this repo is an independent environment (the Compose project name comes from the directory name, so volumes never clash). To run a second copy next to the first one, give it its own ports — create a `.env` file in the second checkout:
+Every clone of this repo is an independent environment. Docker Compose uses the checkout directory as the project name, so containers and volumes get that folder as their prefix (for example `client-site-wordpress-1`, `client-site-db_data`). To run a second copy next to the first one, clone it into a different folder and give it its own ports — create a `.env` file in the second checkout:
 
 ```bash
 cp .env.example .env
