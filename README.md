@@ -19,13 +19,7 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 
 ## Quick start
 
-Use this repository as a GitHub template, create your own project repository, then clone it:
-
-```bash
-git clone https://github.com/your-user/your-project.git
-cd your-project
-docker compose up -d
-```
+Use this repository as a GitHub template, create your own project repository.
 
 If you only want the files in the current folder without creating a Git repository:
 
