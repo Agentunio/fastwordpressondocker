@@ -19,8 +19,18 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 
 ## Quick start
 
+Use this repository as a GitHub template, create your own project repository, then clone it:
+
 ```bash
-git clone https://github.com/Agentunio/fastwordpressondocker.git .
+git clone https://github.com/your-user/your-project.git
+cd your-project
+docker compose up -d
+```
+
+If you only want the files in the current folder without creating a Git repository:
+
+```bash
+curl -L https://github.com/Agentunio/fastwordpressondocker/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1
 docker compose up -d
 ```
 
