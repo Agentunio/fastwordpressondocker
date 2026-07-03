@@ -15,6 +15,20 @@ repair_missing_default_theme() {
     CORE_CONTENT_REPAIRED=1
 }
 
+state0_snapshot_complete() {
+    [ -f /snapshots/state-0.sql ] && [ -f /snapshots/state-0-wp-content.tar.gz ] && [ -f /snapshots/state-0-wp-config.php ]
+}
+
+create_state0_snapshot() {
+    mkdir -p /snapshots
+
+    echo "[init] Creating state-0 snapshot..."
+    wp --allow-root core version > /snapshots/state-0-core-version
+    wp --allow-root db export /snapshots/state-0.sql
+    tar czf /snapshots/state-0-wp-content.tar.gz -C /var/www/html wp-content
+    cp /var/www/html/wp-config.php /snapshots/state-0-wp-config.php
+}
+
 for i in $(seq 1 60); do
     [ -f wp-load.php ] && break
     sleep 1
@@ -27,6 +41,7 @@ done
 
 if wp --allow-root core is-installed 2>/dev/null; then
     echo "[init] WordPress already installed - syncing settings from environment..."
+    mkdir -p /snapshots
     repair_missing_default_theme
     wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
     wp --allow-root option update home "$WORDPRESS_URL"
@@ -43,6 +58,10 @@ if wp --allow-root core is-installed 2>/dev/null; then
         bash /scripts/remove-default-plugins.sh
     fi
     chown -R www-data:www-data /var/www/html/wp-content
+    if ! state0_snapshot_complete; then
+        bash /scripts/remove-default-plugins.sh
+        create_state0_snapshot
+    fi
     echo "[init] Settings synced."
     exit 0
 fi
@@ -86,9 +105,5 @@ bash /scripts/remove-default-plugins.sh
 echo "[init] Fixing wp-content ownership..."
 chown -R www-data:www-data /var/www/html/wp-content
 
-echo "[init] Creating state-0 snapshot..."
-wp --allow-root core version > /snapshots/state-0-core-version
-wp --allow-root db export /snapshots/state-0.sql
-tar czf /snapshots/state-0-wp-content.tar.gz -C /var/www/html wp-content
-cp /var/www/html/wp-config.php /snapshots/state-0-wp-config.php
+create_state0_snapshot
 echo "[init] Done."
