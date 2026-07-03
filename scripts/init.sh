@@ -38,7 +38,7 @@ fi
 
 echo "[init] Fresh install..."
 echo "[init] Downloading latest WordPress core..."
-wp --allow-root core download --force --skip-content
+wp --allow-root core download --force
 
 wp --allow-root core install \
     --url="$WORDPRESS_URL" \
@@ -51,8 +51,8 @@ wp --allow-root core install \
 echo "[init] Disabling WordPress core auto-updates..."
 wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
 
-echo "[init] Installing default theme..."
-wp --allow-root theme install twentytwentyfive --activate
+echo "[init] Activating default theme..."
+wp --allow-root theme activate twentytwentyfive
 
 FREE_PLUGINS=(
     "advanced-custom-fields"
