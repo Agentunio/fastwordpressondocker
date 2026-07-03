@@ -34,6 +34,9 @@ tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
 echo "Restoring wp-config.php..."
 cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
+bash /scripts/apply-optional-plugin.sh
+bash /scripts/install-local-plugins.sh
+
 chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
 
 echo "Reset complete. Restored state-0."

@@ -115,11 +115,11 @@ On a fresh install `scripts/init.sh` installs and activates:
 
 - **Advanced Custom Fields** (free, from wordpress.org)
 - the optional plugin selected in `./start.sh` / `./start.ps1`: **All-in-One WP Migration**, **UpdraftPlus** or none
-- every `*.zip` found in `plugins/` (premium / custom plugins)
+- every `*.zip` found in `plugins/` (premium / custom plugins), also synced on later starts and resets
 
 The optional plugin can be changed later: run `./start.sh` again and pick a different one — it gets installed and the previously selected one is removed automatically. state-0 still contains the old choice — run `./snapshot.sh` if the new one should become part of the base state.
 
-To add a plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs.
+To add a plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs, later starts and resets.
 
 > `plugins/*` is gitignored on purpose — licensed/premium ZIPs stay on your machine and never end up in the repository.
 
@@ -131,9 +131,11 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 |---|---|---|
 | `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom settings, writes PHP/plugin/port settings into `.env`, starts Compose and rebuilds only when PHP changes |
 | `scripts/entrypoint.sh` | container start | starts `init.sh` in the background, hands control to the official WP entrypoint |
-| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugin from `.env`. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
-| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot |
+| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugin from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
+| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then syncs local plugin ZIPs |
 | `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, copies `wp-config.php` into `snapshots/` |
+| `scripts/apply-optional-plugin.sh` | called by init/reset | installs the selected optional plugin and removes unselected managed optional plugins |
+| `scripts/install-local-plugins.sh` | called by init/reset | installs and activates every ZIP from `plugins/` |
 | `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
 
 A state-0 snapshot is four files in `snapshots/` (generated locally, gitignored):
