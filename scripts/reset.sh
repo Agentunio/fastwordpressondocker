@@ -1,6 +1,18 @@
 #!/bin/bash
 set -e
 
+for i in $(seq 1 120); do
+    if [ -f /snapshots/state-0.sql ] && [ -f /snapshots/state-0-wp-content.tar.gz ] && [ -f /snapshots/state-0-wp-config.php ]; then
+        break
+    fi
+
+    if [ "$i" -eq 1 ]; then
+        echo "Waiting for state-0 snapshot..."
+    fi
+
+    sleep 1
+done
+
 if [ ! -f /snapshots/state-0.sql ] || [ ! -f /snapshots/state-0-wp-content.tar.gz ] || [ ! -f /snapshots/state-0-wp-config.php ]; then
     echo "ERROR: snapshot state-0 not complete in /snapshots."
     echo "Expected: state-0.sql, state-0-wp-content.tar.gz, state-0-wp-config.php"
