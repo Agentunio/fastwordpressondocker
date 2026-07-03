@@ -28,6 +28,12 @@ curl -L https://github.com/Agentunio/fastwordpressondocker/archive/refs/heads/ma
 ./start.sh
 ```
 
+Without interactive setup
+```bash
+curl -L https://github.com/Agentunio/fastwordpressondocker/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1
+docker compose up -d
+```
+
 `./start.sh` (macOS / Linux) and `./start.ps1` (Windows) let you choose:
 
 1. `Default settings` (on later runs: `Current settings (…)` — keeps the values already in `.env`)
