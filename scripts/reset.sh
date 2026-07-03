@@ -10,6 +10,15 @@ fi
 cd /var/www/html
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 
+if [ -f /snapshots/state-0-core-version ]; then
+    SNAPSHOT_CORE_VERSION="$(cat /snapshots/state-0-core-version)"
+    CURRENT_CORE_VERSION="$(wp --allow-root core version 2>/dev/null || echo "unknown")"
+    if [ "$CURRENT_CORE_VERSION" != "$SNAPSHOT_CORE_VERSION" ]; then
+        echo "Restoring WordPress core ${SNAPSHOT_CORE_VERSION} (currently ${CURRENT_CORE_VERSION})..."
+        wp --allow-root core download --force --skip-content --version="$SNAPSHOT_CORE_VERSION"
+    fi
+fi
+
 echo "Resetting database..."
 wp --allow-root db reset --yes
 wp --allow-root db import /snapshots/state-0.sql
@@ -27,25 +36,4 @@ cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
 chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
 
-echo "Downloading latest WordPress core..."
-wp --allow-root core download --force --skip-content
-wp --allow-root core update-db
-
-echo "Updating All-in-One WP Migration to latest version..."
-wp --allow-root plugin install all-in-one-wp-migration --force --activate
-
-echo "Updating Advanced Custom Fields to latest version..."
-wp --allow-root plugin install advanced-custom-fields --force --activate
-
-shopt -s nullglob
-for zip in /plugins/*.zip; do
-    echo "Refreshing premium plugin from local zip: $zip"
-    wp --allow-root plugin install "$zip" --force --activate
-done
-shopt -u nullglob
-
-bash /scripts/remove-default-plugins.sh
-
-chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
-
-echo "Reset complete. Restored state-0 and refreshed WordPress/All-in-One WP Migration."
+echo "Reset complete. Restored state-0."

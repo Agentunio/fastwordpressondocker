@@ -3,6 +3,47 @@ set -e
 
 cd /var/www/html
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
+OPTIONAL_PLUGIN="${WORDPRESS_OPTIONAL_PLUGIN:-none}"
+
+MANAGED_OPTIONAL_PLUGINS=(
+    "all-in-one-wp-migration"
+    "updraftplus"
+)
+
+case "$OPTIONAL_PLUGIN" in
+    "none"|""|"all-in-one-wp-migration"|"updraftplus")
+        ;;
+    *)
+        echo "ERROR: unsupported WORDPRESS_OPTIONAL_PLUGIN: $OPTIONAL_PLUGIN"
+        exit 1
+        ;;
+esac
+
+apply_optional_plugin() {
+    local slug
+
+    for slug in "${MANAGED_OPTIONAL_PLUGINS[@]}"; do
+        if [ "$slug" = "$OPTIONAL_PLUGIN" ]; then
+            if ! wp --allow-root plugin is-installed "$slug" 2>/dev/null; then
+                echo "[init] Installing optional plugin: $slug"
+                wp --allow-root plugin install "$slug"
+            fi
+            if ! wp --allow-root plugin is-active "$slug" 2>/dev/null; then
+                wp --allow-root plugin activate "$slug"
+            fi
+        elif wp --allow-root plugin is-installed "$slug" 2>/dev/null; then
+            echo "[init] Removing unselected optional plugin: $slug"
+            if wp --allow-root plugin is-active "$slug" 2>/dev/null; then
+                wp --allow-root plugin deactivate "$slug"
+            fi
+            wp --allow-root plugin delete "$slug"
+        fi
+    done
+
+    if [ "$OPTIONAL_PLUGIN" = "none" ] || [ -z "$OPTIONAL_PLUGIN" ]; then
+        echo "[init] No optional plugin selected."
+    fi
+}
 
 for i in $(seq 1 60); do
     [ -f wp-load.php ] && break
@@ -15,7 +56,13 @@ for i in $(seq 1 60); do
 done
 
 if wp --allow-root core is-installed 2>/dev/null; then
-    echo "[init] WordPress already installed, nothing to do."
+    echo "[init] WordPress already installed - syncing settings from environment..."
+    wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
+    wp --allow-root option update home "$WORDPRESS_URL"
+    wp --allow-root option update siteurl "$WORDPRESS_URL"
+    apply_optional_plugin
+    chown -R www-data:www-data /var/www/html/wp-content
+    echo "[init] Settings synced."
     exit 0
 fi
 
@@ -24,6 +71,9 @@ mkdir -p /snapshots
 if [ -f /snapshots/state-0.sql ] && [ -f /snapshots/state-0-wp-content.tar.gz ] && [ -f /snapshots/state-0-wp-config.php ]; then
     echo "[init] Volume is empty but state-0 snapshot exists - restoring it."
     bash /scripts/reset.sh
+    wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
+    apply_optional_plugin
+    chown -R www-data:www-data /var/www/html/wp-content
     exit 0
 fi
 
@@ -39,17 +89,21 @@ wp --allow-root core install \
     --admin_email=admin@example.com \
     --skip-email
 
+echo "[init] Disabling WordPress core auto-updates..."
+wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
+
 echo "[init] Installing default theme..."
 wp --allow-root theme install twentytwentyfive --activate
 
 FREE_PLUGINS=(
     "advanced-custom-fields"
-    "all-in-one-wp-migration"
 )
 for slug in "${FREE_PLUGINS[@]}"; do
     echo "[init] Installing free plugin: $slug"
     wp --allow-root plugin install "$slug" --activate
 done
+
+apply_optional_plugin
 
 shopt -s nullglob
 for zip in /plugins/*.zip; do
@@ -64,6 +118,7 @@ echo "[init] Fixing wp-content ownership..."
 chown -R www-data:www-data /var/www/html/wp-content
 
 echo "[init] Creating state-0 snapshot..."
+wp --allow-root core version > /snapshots/state-0-core-version
 wp --allow-root db export /snapshots/state-0.sql
 tar czf /snapshots/state-0-wp-content.tar.gz -C /var/www/html wp-content
 cp /var/www/html/wp-config.php /snapshots/state-0-wp-config.php

@@ -1,16 +1,16 @@
 # Fast WordPress on Docker
 
-A disposable local WordPress environment with a restorable base-state snapshot (**state-0**). Clone it, run `docker compose up -d`, and about a minute later you have a fully installed WordPress with an admin account, plugins and phpMyAdmin — no install wizard, no manual configuration.
+A disposable local WordPress environment with a restorable base-state snapshot (**state-0**). Clone it, run `./start.sh` or `docker compose up -d`, and about a minute later you have a fully installed WordPress with an admin account, plugins and phpMyAdmin — no install wizard, no manual configuration.
 
-Built for plugin/theme testing and site-migration workflows: break things freely, then restore the base state with a single command. The reset also pulls the **latest** WordPress core and plugin versions, so your sandbox never goes stale.
+Built for plugin/theme testing and site-migration workflows: break things freely, then restore the base state with a single command.
 
 ## What's inside
 
 | Service | Image | Default URL |
 |---|---|---|
-| WordPress | `wordpress:php8.3-apache` + wp-cli (custom build) | http://localhost |
-| MariaDB | `mariadb:11` | — |
-| phpMyAdmin | `phpmyadmin:5` | http://localhost:8080 |
+| WordPress | **latest** core installed on first run (base image `wordpress:php8.3-apache` + wp-cli 2.12.0, custom build) | http://localhost |
+| MariaDB | `mariadb:11.8` | — |
+| phpMyAdmin | `phpmyadmin:5.2.2` | http://localhost:8080 |
 
 ## Requirements
 
@@ -25,13 +25,29 @@ If you only want the files in the current folder without creating a Git reposito
 
 ```bash
 curl -L https://github.com/Agentunio/fastwordpressondocker/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1
-docker compose up -d
+./start.sh
 ```
+
+`./start.sh` (macOS / Linux) and `./start.ps1` (Windows) let you choose:
+
+1. `Default settings` (on later runs: `Current settings (…)` — keeps the values already in `.env`)
+2. `Custom settings`
+
+In `Custom settings`, choose:
+
+- PHP image version: first `Standard (PHP 8.3)`, then PHP `8.1`, `8.2`, `8.4` and `8.5`.
+- Optional plugin: `None`, `All-in-One WP Migration` or `UpdraftPlus`.
+- WordPress port: `Standard (80)` or a custom port.
+- phpMyAdmin port: `Standard (8080)` or a custom port.
+
+The WordPress URL is generated automatically from the selected WordPress port.
+
+If you do not need the interactive setup, `docker compose up -d` still uses standard PHP `8.3`, WordPress port `80` and phpMyAdmin port `8080`.
 
 The first start takes about a minute and is fully automated:
 
 1. Builds the image (official WordPress image + wp-cli) and pulls MariaDB / phpMyAdmin.
-2. Downloads and installs the **latest** WordPress core — no install wizard.
+2. Downloads and installs the **latest** WordPress core — no install wizard. Core auto-updates are disabled, so the version stays frozen in state-0.
 3. Installs the default theme and the configured plugins (see [Plugins](#plugins)).
 4. Removes WordPress's default Akismet and Hello Dolly plugins.
 5. Saves the initial **state-0** snapshot into `snapshots/`.
@@ -46,7 +62,7 @@ Once it's done:
 
 > These are **local development credentials**, hardcoded in `scripts/init.sh` and used only inside your machine. Change them there before the first start if you want different ones.
 
-Every subsequent `docker compose up -d` starts instantly — init detects the existing installation and exits.
+Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugin).
 
 ## Commands
 
@@ -55,20 +71,13 @@ Every subsequent `docker compose up -d` starts instantly — init detects the ex
 >
 > Both variants do exactly the same thing — they are thin wrappers around the same `scripts/*.sh` executed inside the container.
 
-### `./reset.sh` — restore state-0 (and refresh versions)
+### `./reset.sh` — restore state-0
 
-Rolls everything back (database + `wp-content` + `wp-config.php`) to the state saved as **state-0**, then:
-
-- downloads the latest WordPress core,
-- updates the free plugins (ACF, All-in-One WP Migration) to their latest wordpress.org versions,
-- force-reinstalls premium plugins from the local ZIPs in `plugins/`,
-- removes Akismet / Hello Dolly if they reappeared.
-
-Under the hood: `docker compose exec -T wordpress bash /scripts/reset.sh`
+Rolls everything back (database + `wp-content` + `wp-config.php` + WordPress core version) to the state saved as **state-0**. Nothing gets updated to *latest*, so the snapshot stays stable.
 
 ### `./snapshot.sh` — overwrite state-0
 
-Saves the **current** WordPress state as the new state-0. Use it when you deliberately change the base state — e.g. you added a plugin or theme that should be part of the starting point from now on. Removes Akismet / Hello Dolly before saving.
+Saves the **current** WordPress state as the new state-0. Use it when you deliberately change the base state — e.g. you added a plugin or theme that should be part of the starting point from now on.
 
 Under the hood: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 
@@ -86,53 +95,48 @@ docker compose up -d
 
 ## Running multiple copies in parallel
 
-Every clone of this repo is an independent environment. Docker Compose uses the checkout directory as the project name, so containers and volumes get that folder as their prefix (for example `client-site-wordpress-1`, `client-site-db_data`). To run a second copy next to the first one, clone it into a different folder and give it its own ports — create a `.env` file in the second checkout:
+Every clone of this repo is an independent environment. Docker Compose uses the checkout directory as the project name, so containers and volumes get that folder as their prefix (for example `client-site-wordpress-1`, `client-site-db_data`). To run a second copy next to the first one, clone it into a different folder and give it its own ports:
 
 ```bash
-cp .env.example .env
+./start.sh
 ```
 
-```dotenv
-WORDPRESS_PORT=3001
-WORDPRESS_URL=http://localhost:3001
-PHPMYADMIN_PORT=7778
-```
-
-Then `docker compose up -d` as usual.
-
-**`WORDPRESS_URL` must include the same port as `WORDPRESS_PORT`**, otherwise WordPress redirects to the portless URL. The reset script re-applies `WORDPRESS_URL` to `home`/`siteurl` on every run, so an existing snapshot adapts to new ports automatically.
+Choose `Custom settings`, then pick custom WordPress and phpMyAdmin ports. The wrapper writes `.env` for you, including a matching `WORDPRESS_URL`, which is re-applied to `home`/`siteurl` on every container start — an existing installation adapts to new ports automatically.
 
 ## Plugins
 
 On a fresh install `scripts/init.sh` installs and activates:
 
 - **Advanced Custom Fields** (free, from wordpress.org)
-- **All-in-One WP Migration** (free, from wordpress.org)
+- the optional plugin selected in `./start.sh` / `./start.ps1`: **All-in-One WP Migration**, **UpdraftPlus** or none
 - every `*.zip` found in `plugins/` (premium / custom plugins)
 
-To add another free plugin → add its wordpress.org slug to the `FREE_PLUGINS=(...)` array in `scripts/init.sh`.
-To add a premium plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs and force-reinstalled on every reset.
+The optional plugin can be changed later: run `./start.sh` again and pick a different one — it gets installed and the previously selected one is removed automatically. state-0 still contains the old choice — run `./snapshot.sh` if the new one should become part of the base state.
+
+To add a plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs.
 
 > `plugins/*` is gitignored on purpose — licensed/premium ZIPs stay on your machine and never end up in the repository.
 
-WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on fresh install, on every reset and before every snapshot.
+WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on fresh install and before every snapshot.
 
 ## How it works
 
 | Script | Runs when | What it does |
 |---|---|---|
+| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom settings, writes PHP/plugin/port settings into `.env`, starts Compose and rebuilds only when PHP changes |
 | `scripts/entrypoint.sh` | container start | starts `init.sh` in the background, hands control to the official WP entrypoint |
-| `scripts/init.sh` | container start (background) | WP already installed → exit. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
-| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` from the snapshot, updates core + plugins |
+| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugin from `.env`. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
+| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot |
 | `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, copies `wp-config.php` into `snapshots/` |
-| `scripts/remove-default-plugins.sh` | called by the three above | deletes Akismet & Hello Dolly if present |
+| `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
 
-A state-0 snapshot is three files in `snapshots/` (generated locally, gitignored):
+A state-0 snapshot is four files in `snapshots/` (generated locally, gitignored):
 
 ```
 state-0.sql                  # full database dump
 state-0-wp-content.tar.gz    # wp-content (plugins, themes, uploads)
 state-0-wp-config.php        # wp-config.php
+state-0-core-version         # WordPress core version at snapshot time
 ```
 
 WordPress core and the database live in named Docker volumes (`wp_data`, `db_data`). `wp-content/` is bind-mounted from the repo directory, so you can edit themes and plugins directly from your IDE on the host.
@@ -141,49 +145,33 @@ WordPress core and the database live in named Docker volumes (`wp_data`, `db_dat
 
 ```
 docker-compose.yml          # services: db (MariaDB 11), wordpress (custom build), phpmyadmin
-Dockerfile                  # wordpress:php8.3-apache + wp-cli + mariadb-client
-.env.example                # port/URL overrides (copy to .env)
+Dockerfile                  # wordpress:php${PHP_VERSION}-apache + pinned wp-cli + mariadb-client
 scripts/
   entrypoint.sh             # custom container entrypoint
   init.sh                   # first install / restore from state-0
-  reset.sh                  # restore state-0 + update WP/plugins
+  reset.sh                  # restore state-0
   snapshot.sh               # save the current state as state-0
   remove-default-plugins.sh # delete Akismet & Hello Dolly
 plugins/                    # premium plugin ZIPs (gitignored, local only)
 snapshots/                  # state-0.* files (gitignored, generated locally)
 wp-content/                 # live wp-content of the running site (gitignored)
+start.sh / start.ps1        # interactive host wrappers (macOS+Linux / Windows)
 reset.sh / reset.ps1        # host wrappers (macOS+Linux / Windows)
 snapshot.sh / snapshot.ps1  # host wrappers (macOS+Linux / Windows)
 ```
 
 ## Typical workflow
 
-1. `docker compose up -d` — the first run installs everything and saves state-0.
-2. Click around, test plugins, import a site with All-in-One WP Migration, break things.
-3. `./reset.sh` — back to state-0 in seconds, with WP core + plugins refreshed to latest.
+1. `./start.sh` or `docker compose up -d` — the first run installs everything and saves state-0.
+2. Click around, test plugins, import a site with your selected migration/backup plugin, break things.
+3. `./reset.sh` — back to state-0 in seconds.
 4. Want a different starting point? Set the site up the way you like and run `./snapshot.sh`.
 5. Repeat.
 
-## Troubleshooting
-
-**`./reset.sh` fails mid-script with `command not found` (e.g. `ch: command not found`)**
-
-Docker Desktop on macOS (VirtioFS) can serve a stale or truncated version of a bind-mounted file after it was edited on the host. Force a re-read:
-
-```bash
-docker compose restart wordpress
-```
-
-Sanity check that the container sees the same file size as the host:
-
-```bash
-docker compose exec -T wordpress wc -c /scripts/reset.sh && wc -c scripts/reset.sh
-```
-
 **Port 80 (or 8080) is already in use**
 
-Create a `.env` file (see [Running multiple copies in parallel](#running-multiple-copies-in-parallel)) and pick free ports.
+Run `./start.sh`, choose `Custom settings`, and pick free ports.
 
 **The site redirects to `http://localhost` without your custom port**
 
-`WORDPRESS_URL` in `.env` must include the port, e.g. `http://localhost:3001`. Run `./reset.sh` afterwards to re-apply it.
+Run `./start.sh` again and choose the WordPress port. The wrapper updates `WORDPRESS_URL` and restarts the container, which re-applies it automatically — no `./reset.sh` needed.
