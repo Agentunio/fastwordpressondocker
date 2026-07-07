@@ -78,6 +78,67 @@ function Read-MenuChoice {
         [string[]] $Options
     )
 
+    if ($Options.Count -eq 0) {
+        throw "No menu options available."
+    }
+
+    if ([Console]::IsInputRedirected) {
+        return Read-MenuChoiceByNumber $Prompt $Options
+    }
+
+    $selectedIndex = 0
+
+    while ($true) {
+        Clear-Host
+        Write-Host $Prompt
+        Write-Host ""
+
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            if ($i -eq $selectedIndex) {
+                Write-Host "> $($Options[$i])" -ForegroundColor Cyan
+            } else {
+                Write-Host "  $($Options[$i])"
+            }
+        }
+
+        Write-Host ""
+        Write-Host "Use Up/Down arrows and Enter."
+
+        try {
+            $key = [Console]::ReadKey($true)
+        } catch {
+            return Read-MenuChoiceByNumber $Prompt $Options
+        }
+
+        switch ($key.Key) {
+            "UpArrow" {
+                if ($selectedIndex -gt 0) {
+                    $selectedIndex--
+                } else {
+                    $selectedIndex = $Options.Count - 1
+                }
+            }
+            "DownArrow" {
+                if ($selectedIndex -lt ($Options.Count - 1)) {
+                    $selectedIndex++
+                } else {
+                    $selectedIndex = 0
+                }
+            }
+            "Enter" {
+                Write-Host ""
+                return $Options[$selectedIndex]
+            }
+        }
+    }
+}
+
+function Read-MenuChoiceByNumber {
+    param (
+        [string] $Prompt,
+        [string[]] $Options
+    )
+
     while ($true) {
         Write-Host ""
         Write-Host $Prompt

@@ -51,15 +51,67 @@ choose_option() {
     local prompt="$1"
     shift
     local options=("$@")
+    local selected=0
+    local key
 
-    echo "$prompt" >&2
-    PS3="Choose option: "
-    select option in "${options[@]}"; do
-        if [ -n "${option:-}" ]; then
-            echo "$option"
-            return 0
-        fi
-        echo "Invalid option. Choose a number from 1 to ${#options[@]}." >&2
+    if ! { exec 3</dev/tty; } 2>/dev/null; then
+        echo "$prompt" >&2
+        PS3="Choose option: "
+        select option in "${options[@]}"; do
+            if [ -n "${option:-}" ]; then
+                echo "$option"
+                return 0
+            fi
+            echo "Invalid option. Choose a number from 1 to ${#options[@]}." >&2
+        done
+    fi
+
+    while true; do
+        printf "\033[2J\033[H" >&2
+        printf "%s\n\n" "$prompt" >&2
+
+        for i in "${!options[@]}"; do
+            if [ "$i" -eq "$selected" ]; then
+                printf "> %s\n" "${options[$i]}" >&2
+            else
+                printf "  %s\n" "${options[$i]}" >&2
+            fi
+        done
+
+        printf "\nUse Up/Down arrows and Enter.\n" >&2
+
+        IFS= read -rsn1 key <&3 || {
+            exec 3<&-
+            return 1
+        }
+
+        case "$key" in
+            $'\x1b')
+                IFS= read -rsn2 -t 1 key <&3 || key=""
+                case "$key" in
+                    "[A")
+                        if [ "$selected" -gt 0 ]; then
+                            selected=$((selected - 1))
+                        else
+                            selected=$((${#options[@]} - 1))
+                        fi
+                        ;;
+                    "[B")
+                        if [ "$selected" -lt $((${#options[@]} - 1)) ]; then
+                            selected=$((selected + 1))
+                        else
+                            selected=0
+                        fi
+                        ;;
+                esac
+                ;;
+            ""|$'\r'|$'\n')
+                printf "\n" >&2
+                echo "${options[$selected]}"
+                exec 3<&-
+                return 0
+                ;;
+        esac
     done
 }
 
