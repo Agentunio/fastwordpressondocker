@@ -157,6 +157,181 @@ function Read-MenuChoiceByNumber {
     }
 }
 
+function Test-OptionalPluginSelected {
+    param (
+        [string] $SelectedPlugins,
+        [string] $Slug
+    )
+
+    $selectedValues = @($SelectedPlugins -split "," | ForEach-Object { $_.Trim() })
+    return ($selectedValues -contains $Slug)
+}
+
+function Read-OptionalPluginsByNumber {
+    while ($true) {
+        Write-Host ""
+        Write-Host "Choose optional plugins:"
+        Write-Host "1) None"
+        Write-Host "2) All-in-One WP Migration"
+        Write-Host "3) UpdraftPlus"
+        Write-Host "4) Advanced Custom Fields"
+
+        $rawChoice = Read-Host "Choose options separated by comma (empty = none)"
+        $rawChoice = ($rawChoice -replace "\s", "")
+
+        if ([string]::IsNullOrEmpty($rawChoice) -or $rawChoice -eq "1") {
+            return "none"
+        }
+
+        $choices = @($rawChoice -split ",")
+
+        if ($choices -contains "1") {
+            return "none"
+        }
+
+        $selectedPlugins = @()
+        $valid = $true
+
+        foreach ($choice in $choices) {
+            switch ($choice) {
+                "2" { $slug = "all-in-one-wp-migration" }
+                "3" { $slug = "updraftplus" }
+                "4" { $slug = "advanced-custom-fields" }
+                default { $valid = $false }
+            }
+
+            if ($valid -and $choice -ne "1" -and $selectedPlugins -notcontains $slug) {
+                $selectedPlugins += $slug
+            }
+        }
+
+        if ($valid) {
+            if ($selectedPlugins.Count -eq 0) {
+                return "none"
+            }
+
+            return ($selectedPlugins -join ",")
+        }
+
+        Write-Host "Invalid option. Choose numbers from 1 to 4."
+    }
+}
+
+function Read-OptionalPlugins {
+    param (
+        [string] $CurrentPlugins
+    )
+
+    $labels = @(
+        "None",
+        "All-in-One WP Migration",
+        "UpdraftPlus",
+        "Advanced Custom Fields"
+    )
+    $slugs = @(
+        "none",
+        "all-in-one-wp-migration",
+        "updraftplus",
+        "advanced-custom-fields"
+    )
+    $checked = @($false, $false, $false, $false)
+
+    if ([string]::IsNullOrEmpty($CurrentPlugins) -or $CurrentPlugins -eq "none") {
+        $checked[0] = $true
+    } else {
+        for ($i = 1; $i -lt $slugs.Count; $i++) {
+            if (Test-OptionalPluginSelected $CurrentPlugins $slugs[$i]) {
+                $checked[$i] = $true
+            }
+        }
+    }
+
+    if (-not ($checked[1] -or $checked[2] -or $checked[3])) {
+        $checked[0] = $true
+    }
+
+    if ([Console]::IsInputRedirected) {
+        return Read-OptionalPluginsByNumber
+    }
+
+    $selectedIndex = 0
+
+    while ($true) {
+        Clear-Host
+        Write-Host "Choose optional plugins:"
+        Write-Host ""
+
+        for ($i = 0; $i -lt $labels.Count; $i++) {
+            if ($checked[$i]) {
+                $mark = "x"
+            } else {
+                $mark = " "
+            }
+
+            if ($i -eq $selectedIndex) {
+                Write-Host "> [$mark] $($labels[$i])" -ForegroundColor Cyan
+            } else {
+                Write-Host "  [$mark] $($labels[$i])"
+            }
+        }
+
+        Write-Host ""
+        Write-Host "Use Up/Down arrows, Space to toggle, Enter to confirm."
+
+        try {
+            $key = [Console]::ReadKey($true)
+        } catch {
+            return Read-OptionalPluginsByNumber
+        }
+
+        switch ($key.Key) {
+            "UpArrow" {
+                if ($selectedIndex -gt 0) {
+                    $selectedIndex--
+                } else {
+                    $selectedIndex = $labels.Count - 1
+                }
+            }
+            "DownArrow" {
+                if ($selectedIndex -lt ($labels.Count - 1)) {
+                    $selectedIndex++
+                } else {
+                    $selectedIndex = 0
+                }
+            }
+            "Spacebar" {
+                if ($selectedIndex -eq 0) {
+                    $checked = @($true, $false, $false, $false)
+                } else {
+                    $checked[0] = $false
+                    $checked[$selectedIndex] = -not $checked[$selectedIndex]
+
+                    if (-not ($checked[1] -or $checked[2] -or $checked[3])) {
+                        $checked[0] = $true
+                    }
+                }
+            }
+            "Enter" {
+                $selectedPlugins = @()
+
+                for ($i = 1; $i -lt $slugs.Count; $i++) {
+                    if ($checked[$i]) {
+                        $selectedPlugins += $slugs[$i]
+                    }
+                }
+
+                Write-Host ""
+
+                if ($selectedPlugins.Count -eq 0) {
+                    return "none"
+                }
+
+                return ($selectedPlugins -join ",")
+            }
+        }
+    }
+}
+
 function Read-Port {
     param (
         [string] $Prompt
@@ -208,7 +383,7 @@ $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $De
 $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
 
 if (Test-Path $EnvFile) {
-    $keepOption = "Current settings (PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugin: $optionalPlugin)"
+    $keepOption = "Current settings (PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin)"
 } else {
     $keepOption = "Default settings"
 }
@@ -232,17 +407,7 @@ if ($setupMode -eq "Custom settings") {
         "PHP 8.5" { $phpVersion = "8.5" }
     }
 
-    $pluginChoice = Read-MenuChoice "Choose optional plugin:" @(
-        "None",
-        "All-in-One WP Migration",
-        "UpdraftPlus"
-    )
-
-    switch ($pluginChoice) {
-        "None" { $optionalPlugin = "none" }
-        "All-in-One WP Migration" { $optionalPlugin = "all-in-one-wp-migration" }
-        "UpdraftPlus" { $optionalPlugin = "updraftplus" }
-    }
+    $optionalPlugin = Read-OptionalPlugins $optionalPlugin
 
     $wordPressPort = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
 

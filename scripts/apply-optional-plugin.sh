@@ -1,24 +1,65 @@
 #!/bin/bash
 set -e
 
-OPTIONAL_PLUGIN="${WORDPRESS_OPTIONAL_PLUGIN:-none}"
+OPTIONAL_PLUGINS="${WORDPRESS_OPTIONAL_PLUGIN:-none}"
 
 MANAGED_OPTIONAL_PLUGINS=(
     "all-in-one-wp-migration"
     "updraftplus"
+    "advanced-custom-fields"
 )
 
-case "$OPTIONAL_PLUGIN" in
-    "none"|""|"all-in-one-wp-migration"|"updraftplus")
-        ;;
-    *)
-        echo "ERROR: unsupported WORDPRESS_OPTIONAL_PLUGIN: $OPTIONAL_PLUGIN"
+SELECTED_OPTIONAL_PLUGINS=()
+
+optional_plugin_is_managed() {
+    local requested_slug="$1"
+    local managed_slug
+
+    for managed_slug in "${MANAGED_OPTIONAL_PLUGINS[@]}"; do
+        if [ "$managed_slug" = "$requested_slug" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+optional_plugin_is_selected() {
+    local requested_slug="$1"
+    local selected_slug
+
+    for selected_slug in "${SELECTED_OPTIONAL_PLUGINS[@]}"; do
+        if [ "$selected_slug" = "$requested_slug" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+IFS=',' read -ra requested_optional_plugins <<< "$OPTIONAL_PLUGINS"
+
+for slug in "${requested_optional_plugins[@]}"; do
+    slug="${slug//[[:space:]]/}"
+
+    case "$slug" in
+        ""|"none")
+            continue
+            ;;
+    esac
+
+    if ! optional_plugin_is_managed "$slug"; then
+        echo "ERROR: unsupported WORDPRESS_OPTIONAL_PLUGIN: $slug"
         exit 1
-        ;;
-esac
+    fi
+
+    if ! optional_plugin_is_selected "$slug"; then
+        SELECTED_OPTIONAL_PLUGINS+=("$slug")
+    fi
+done
 
 for slug in "${MANAGED_OPTIONAL_PLUGINS[@]}"; do
-    if [ "$slug" = "$OPTIONAL_PLUGIN" ]; then
+    if optional_plugin_is_selected "$slug"; then
         if ! wp --allow-root plugin is-installed "$slug" 2>/dev/null; then
             echo "[plugins] Installing optional plugin: $slug"
             wp --allow-root plugin install "$slug"
@@ -35,6 +76,6 @@ for slug in "${MANAGED_OPTIONAL_PLUGINS[@]}"; do
     fi
 done
 
-if [ "$OPTIONAL_PLUGIN" = "none" ] || [ -z "$OPTIONAL_PLUGIN" ]; then
-    echo "[plugins] No optional plugin selected."
+if [ "${#SELECTED_OPTIONAL_PLUGINS[@]}" -eq 0 ]; then
+    echo "[plugins] No optional plugins selected."
 fi

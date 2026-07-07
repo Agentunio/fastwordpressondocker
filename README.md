@@ -42,7 +42,7 @@ docker compose up -d
 In `Custom settings`, choose:
 
 - PHP image version: first `Standard (PHP 8.3)`, then PHP `8.1`, `8.2`, `8.4` and `8.5`.
-- Optional plugin: `None`, `All-in-One WP Migration` or `UpdraftPlus`.
+- Optional plugins: `All-in-One WP Migration`, `UpdraftPlus` and `Advanced Custom Fields` can be selected together, or leave `None`.
 - WordPress port: `Standard (80)` or a custom port.
 - phpMyAdmin port: `Standard (8080)` or a custom port.
 
@@ -68,7 +68,7 @@ Once it's done:
 
 > These are **local development credentials**, hardcoded in `scripts/init.sh` and used only inside your machine. Change them there before the first start if you want different ones.
 
-Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugin).
+Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugins).
 
 ## Commands
 
@@ -113,11 +113,10 @@ Choose `Custom settings`, then pick custom WordPress and phpMyAdmin ports. The w
 
 On a fresh install `scripts/init.sh` installs and activates:
 
-- **Advanced Custom Fields** (free, from wordpress.org)
-- the optional plugin selected in `./start.sh` / `./start.ps1`: **All-in-One WP Migration**, **UpdraftPlus** or none
+- the optional plugins selected in `./start.sh` / `./start.ps1`: **All-in-One WP Migration**, **UpdraftPlus**, **Advanced Custom Fields** or none
 - every `*.zip` found in `plugins/` (premium / custom plugins), also synced on later starts and resets
 
-The optional plugin can be changed later: run `./start.sh` again and pick a different one — it gets installed and the previously selected one is removed automatically. state-0 still contains the old choice — run `./snapshot.sh` if the new one should become part of the base state.
+The optional plugins can be changed later: run `./start.sh` again and adjust the selection — selected plugins get installed and unselected managed optional plugins are removed automatically. state-0 still contains the old choice — run `./snapshot.sh` if the new selection should become part of the base state.
 
 To add a plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs, later starts and resets.
 
@@ -129,12 +128,12 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 
 | Script | Runs when | What it does |
 |---|---|---|
-| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom settings, writes PHP/plugin/port settings into `.env`, starts Compose and rebuilds only when PHP changes |
+| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom settings, writes PHP/plugins/port settings into `.env`, starts Compose and rebuilds only when PHP changes |
 | `scripts/entrypoint.sh` | container start | starts `init.sh` in the background, hands control to the official WP entrypoint |
-| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugin from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
+| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugins from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
 | `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then syncs local plugin ZIPs |
 | `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, copies `wp-config.php` into `snapshots/` |
-| `scripts/apply-optional-plugin.sh` | called by init/reset | installs the selected optional plugin and removes unselected managed optional plugins |
+| `scripts/apply-optional-plugin.sh` | called by init/reset | installs selected optional plugins and removes unselected managed optional plugins |
 | `scripts/install-local-plugins.sh` | called by init/reset | installs and activates every ZIP from `plugins/` |
 | `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
 

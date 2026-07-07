@@ -51,7 +51,6 @@ if wp --allow-root core is-installed 2>/dev/null; then
         echo "[init] Active theme files missing - activating twentytwentyfive..."
         wp --allow-root theme activate twentytwentyfive
     fi
-    bash /scripts/install-free-plugins.sh
     bash /scripts/apply-optional-plugin.sh
     bash /scripts/install-local-plugins.sh
     if [ "$CORE_CONTENT_REPAIRED" -eq 1 ]; then
@@ -93,8 +92,6 @@ wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
 
 echo "[init] Activating default theme..."
 wp --allow-root theme activate twentytwentyfive
-
-bash /scripts/install-free-plugins.sh
 
 bash /scripts/apply-optional-plugin.sh
 
