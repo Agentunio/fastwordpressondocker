@@ -75,7 +75,9 @@ function Get-EnvValueOrDefault {
 function Read-MenuChoice {
     param (
         [string] $Prompt,
-        [string[]] $Options
+        [string[]] $Options,
+        [switch] $AllowBack,
+        [string] $DefaultOption = ""
     )
 
     if ($Options.Count -eq 0) {
@@ -86,7 +88,19 @@ function Read-MenuChoice {
         return Read-MenuChoiceByNumber $Prompt $Options
     }
 
+    $hint = "Use Up/Down arrows and Enter."
+    if ($AllowBack) {
+        $hint = "Use Up/Down arrows and Enter. Left/Backspace = back."
+    }
+
     $selectedIndex = 0
+    if ($DefaultOption) {
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            if ($Options[$i] -eq $DefaultOption) {
+                $selectedIndex = $i
+            }
+        }
+    }
 
     while ($true) {
         Clear-Host
@@ -102,7 +116,7 @@ function Read-MenuChoice {
         }
 
         Write-Host ""
-        Write-Host "Use Up/Down arrows and Enter."
+        Write-Host $hint
 
         try {
             $key = [Console]::ReadKey($true)
@@ -129,7 +143,18 @@ function Read-MenuChoice {
                 Write-Host ""
                 return $Options[$selectedIndex]
             }
+            { $_ -eq "LeftArrow" -or $_ -eq "Backspace" } {
+                if ($AllowBack) {
+                    return $null
+                }
+            }
         }
+    }
+}
+
+function Assert-InputAvailable {
+    if ([Console]::IsInputRedirected -and [Console]::In.Peek() -eq -1) {
+        throw "No more input available on redirected stdin."
     }
 }
 
@@ -140,6 +165,7 @@ function Read-MenuChoiceByNumber {
     )
 
     while ($true) {
+        Assert-InputAvailable
         Write-Host ""
         Write-Host $Prompt
         for ($i = 0; $i -lt $Options.Count; $i++) {
@@ -169,6 +195,7 @@ function Test-OptionalPluginSelected {
 
 function Read-OptionalPluginsByNumber {
     while ($true) {
+        Assert-InputAvailable
         Write-Host ""
         Write-Host "Choose optional plugins:"
         Write-Host "1) None"
@@ -226,7 +253,8 @@ function Read-OptionalPlugins {
         "None",
         "All-in-One WP Migration",
         "UpdraftPlus",
-        "Advanced Custom Fields"
+        "Advanced Custom Fields",
+        "Confirm"
     )
     $slugs = @(
         "none",
@@ -234,6 +262,7 @@ function Read-OptionalPlugins {
         "updraftplus",
         "advanced-custom-fields"
     )
+    $confirmIndex = $labels.Count - 1
     $checked = @($false, $false, $false, $false)
 
     if ([string]::IsNullOrEmpty($CurrentPlugins) -or $CurrentPlugins -eq "none") {
@@ -262,6 +291,15 @@ function Read-OptionalPlugins {
         Write-Host ""
 
         for ($i = 0; $i -lt $labels.Count; $i++) {
+            if ($i -eq $confirmIndex) {
+                if ($i -eq $selectedIndex) {
+                    Write-Host "> $($labels[$i])" -ForegroundColor Cyan
+                } else {
+                    Write-Host "  $($labels[$i])"
+                }
+                continue
+            }
+
             if ($checked[$i]) {
                 $mark = "x"
             } else {
@@ -276,13 +314,15 @@ function Read-OptionalPlugins {
         }
 
         Write-Host ""
-        Write-Host "Use Up/Down arrows, Space to toggle, Enter to confirm."
+        Write-Host "Enter/Space toggles, Confirm continues, Left/Backspace = back."
 
         try {
             $key = [Console]::ReadKey($true)
         } catch {
             return Read-OptionalPluginsByNumber
         }
+
+        $toggle = $false
 
         switch ($key.Key) {
             "UpArrow" {
@@ -300,33 +340,46 @@ function Read-OptionalPlugins {
                 }
             }
             "Spacebar" {
-                if ($selectedIndex -eq 0) {
-                    $checked = @($true, $false, $false, $false)
-                } else {
-                    $checked[0] = $false
-                    $checked[$selectedIndex] = -not $checked[$selectedIndex]
-
-                    if (-not ($checked[1] -or $checked[2] -or $checked[3])) {
-                        $checked[0] = $true
-                    }
+                if ($selectedIndex -ne $confirmIndex) {
+                    $toggle = $true
                 }
             }
             "Enter" {
-                $selectedPlugins = @()
+                if ($selectedIndex -ne $confirmIndex) {
+                    $toggle = $true
+                } else {
+                    $selectedPlugins = @()
 
-                for ($i = 1; $i -lt $slugs.Count; $i++) {
-                    if ($checked[$i]) {
-                        $selectedPlugins += $slugs[$i]
+                    for ($i = 1; $i -lt $slugs.Count; $i++) {
+                        if ($checked[$i]) {
+                            $selectedPlugins += $slugs[$i]
+                        }
                     }
+
+                    Write-Host ""
+
+                    if ($selectedPlugins.Count -eq 0) {
+                        return "none"
+                    }
+
+                    return ($selectedPlugins -join ",")
                 }
+            }
+            { $_ -eq "LeftArrow" -or $_ -eq "Backspace" } {
+                return $null
+            }
+        }
 
-                Write-Host ""
+        if ($toggle) {
+            if ($selectedIndex -eq 0) {
+                $checked = @($true, $false, $false, $false)
+            } else {
+                $checked[0] = $false
+                $checked[$selectedIndex] = -not $checked[$selectedIndex]
 
-                if ($selectedPlugins.Count -eq 0) {
-                    return "none"
+                if (-not ($checked[1] -or $checked[2] -or $checked[3])) {
+                    $checked[0] = $true
                 }
-
-                return ($selectedPlugins -join ",")
             }
         }
     }
@@ -339,6 +392,11 @@ function Read-Port {
 
     while ($true) {
         $rawPort = Read-Host $Prompt
+
+        if ([string]::IsNullOrWhiteSpace($rawPort)) {
+            return $null
+        }
+
         $port = 0
 
         if ([int]::TryParse($rawPort, [ref] $port) -and $port -ge 1 -and $port -le 65535) {
@@ -355,13 +413,25 @@ function Read-PortChoice {
         [string] $DefaultPort
     )
 
-    $portChoice = Read-MenuChoice $Prompt @("Standard ($DefaultPort)", "Custom")
+    while ($true) {
+        $portChoice = Read-MenuChoice $Prompt @("Standard ($DefaultPort)", "Custom") -AllowBack
 
-    if ($portChoice -eq "Standard ($DefaultPort)") {
-        return $DefaultPort
+        if ($null -eq $portChoice) {
+            return $null
+        }
+
+        if ($portChoice -eq "Standard ($DefaultPort)") {
+            return $DefaultPort
+        }
+
+        $port = Read-Port "Enter custom port (empty = back)"
+
+        if ($null -eq $port) {
+            continue
+        }
+
+        return $port
     }
-
-    return Read-Port "Enter custom port"
 }
 
 function Get-LocalhostUrl {
@@ -382,43 +452,109 @@ $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMy
 $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $DefaultOptionalPlugin
 $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
 
+# Snapshots: "Current/Default settings" must not apply edits from an
+# abandoned Custom pass reached and backed out of via Left/Backspace.
+$initialPhpVersion = $phpVersion
+$initialOptionalPlugin = $optionalPlugin
+$initialWordPressPort = $wordPressPort
+$initialPhpMyAdminPort = $phpMyAdminPort
+
 if (Test-Path $EnvFile) {
-    $keepOption = "Current settings (PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin)"
+    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin`n`nChoose setup mode:"
+    $keepOption = "Current settings"
 } else {
+    $setupPrompt = "Choose setup mode:"
     $keepOption = "Default settings"
 }
 
-$setupMode = Read-MenuChoice "Choose setup mode:" @($keepOption, "Custom settings")
-
-if ($setupMode -eq "Custom settings") {
-    $phpChoice = Read-MenuChoice "Choose PHP version:" @(
-        "Standard (PHP $DefaultPhpVersion)",
-        "PHP 8.1",
-        "PHP 8.2",
-        "PHP 8.4",
-        "PHP 8.5"
+function Get-PhpVersionLabel {
+    param (
+        [string] $Version
     )
 
-    switch ($phpChoice) {
-        "Standard (PHP $DefaultPhpVersion)" { $phpVersion = $DefaultPhpVersion }
-        "PHP 8.1" { $phpVersion = "8.1" }
-        "PHP 8.2" { $phpVersion = "8.2" }
-        "PHP 8.4" { $phpVersion = "8.4" }
-        "PHP 8.5" { $phpVersion = "8.5" }
+    if ($Version -eq $DefaultPhpVersion) {
+        return "Standard (PHP $DefaultPhpVersion)"
     }
 
-    $optionalPlugin = Read-OptionalPlugins $optionalPlugin
+    return "PHP $Version"
+}
 
-    $wordPressPort = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
+$phpMyAdminPrompt = "Choose phpMyAdmin port:"
+$step = 0
+$done = $false
 
-    while ($true) {
-        $phpMyAdminPort = Read-PortChoice "Choose phpMyAdmin port:" $DefaultPhpMyAdminPort
+while (-not $done) {
+    if ($step -eq 0) {
+        $setupMode = Read-MenuChoice $setupPrompt @($keepOption, "Custom settings")
 
-        if ($phpMyAdminPort -ne $wordPressPort) {
-            break
+        if ($setupMode -ne "Custom settings") {
+            $phpVersion = $initialPhpVersion
+            $optionalPlugin = $initialOptionalPlugin
+            $wordPressPort = $initialWordPressPort
+            $phpMyAdminPort = $initialPhpMyAdminPort
+            $done = $true
+        } else {
+            $step = 1
+        }
+    } elseif ($step -eq 1) {
+        $phpChoice = Read-MenuChoice "Choose PHP version:" @(
+            "Standard (PHP $DefaultPhpVersion)",
+            "PHP 8.1",
+            "PHP 8.2",
+            "PHP 8.4",
+            "PHP 8.5"
+        ) -AllowBack -DefaultOption (Get-PhpVersionLabel $phpVersion)
+
+        if ($null -eq $phpChoice) {
+            $step = 0
+            continue
         }
 
-        Write-Host "phpMyAdmin port must be different from WordPress port ($wordPressPort)."
+        switch ($phpChoice) {
+            "Standard (PHP $DefaultPhpVersion)" { $phpVersion = $DefaultPhpVersion }
+            "PHP 8.1" { $phpVersion = "8.1" }
+            "PHP 8.2" { $phpVersion = "8.2" }
+            "PHP 8.4" { $phpVersion = "8.4" }
+            "PHP 8.5" { $phpVersion = "8.5" }
+        }
+
+        $step = 2
+    } elseif ($step -eq 2) {
+        $pluginChoice = Read-OptionalPlugins $optionalPlugin
+
+        if ($null -eq $pluginChoice) {
+            $step = 1
+            continue
+        }
+
+        $optionalPlugin = $pluginChoice
+        $step = 3
+    } elseif ($step -eq 3) {
+        $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
+
+        if ($null -eq $portChoice) {
+            $step = 2
+            continue
+        }
+
+        $wordPressPort = $portChoice
+        $phpMyAdminPrompt = "Choose phpMyAdmin port:"
+        $step = 4
+    } else {
+        $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort
+
+        if ($null -eq $portChoice) {
+            $step = 3
+            continue
+        }
+
+        if ($portChoice -eq $wordPressPort) {
+            $phpMyAdminPrompt = "phpMyAdmin port must be different from WordPress port ($wordPressPort).`n`nChoose phpMyAdmin port:"
+            continue
+        }
+
+        $phpMyAdminPort = $portChoice
+        $done = $true
     }
 }
 
@@ -430,6 +566,10 @@ Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
 Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
 Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
 Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile
+
+if (-not [Console]::IsInputRedirected) {
+    Clear-Host
+}
 
 Write-Host "Starting WordPress with PHP $phpVersion..."
 Write-Host "WordPress URL: $wordPressUrl"

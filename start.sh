@@ -47,71 +47,269 @@ env_value_or_default() {
     echo "${value:-$2}"
 }
 
+restore_tty_echo() {
+    stty echo icanon 2>/dev/null < /dev/tty || true
+}
+
+trap restore_tty_echo EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap '' TTOU
+
+open_menu_tty() {
+    if ! { exec 3</dev/tty; } 2>/dev/null; then
+        return 1
+    fi
+
+    # Menus run inside $(...) subshells where bash 3.2 keeps its internal
+    # SIGINT handler and a blocked read just restarts — the subshell would
+    # survive Ctrl+C and wedge the main shell's exit while it waits.
+    trap 'close_menu_tty; exit 130' INT TERM
+
+    stty -echo -icanon min 1 time 0 2>/dev/null <&3 || true
+}
+
+close_menu_tty() {
+    { stty echo icanon 2>/dev/null <&3 || true; } 2>/dev/null
+    exec 3<&-
+}
+
+erase_menu_block() {
+    local lines="$1"
+
+    printf "\033[%sA\r\033[0J" "$lines" >&2
+}
+
+# Cursor-relative rendering needs the whole menu block plus the cursor line
+# on screen at once; on a shorter terminal ESC[nA clamps at the top row and
+# rewrites land on the wrong lines.
+menu_fits_terminal() {
+    local needed_rows="$1"
+    local term_rows
+
+    term_rows="$(stty size 2>/dev/null <&3 | awk '{print $1}')" || term_rows=""
+
+    # 0 rows means the terminal did not report a size — assume it fits.
+    if [[ "$term_rows" =~ ^[0-9]+$ ]] && [ "$term_rows" -gt 0 ] && [ "$term_rows" -lt "$needed_rows" ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+rewrite_menu_line() {
+    local option_count="$1"
+    local index="$2"
+    local text="$3"
+    local lines_up
+
+    lines_up=$((option_count - index + 2))
+    printf "\033[%sA\r%s\033[%sB" "$lines_up" "$text" "$lines_up" >&2
+}
+
+# Sets MENU_KEY instead of printing: a $(...) fork per keypress opens a
+# window where Ctrl+C wedges bash 3.2 inside the command-substitution wait.
+MENU_KEY="OTHER"
+
+read_menu_key() {
+    local c
+    local seq
+    local started
+    local instant_failures=0
+
+    MENU_KEY="OTHER"
+
+    # Poll with -t 1 instead of blocking forever: bash 3.2 never delivers a
+    # pending SIGINT to a read that is blocked, only between commands. On
+    # timeout read returns 1 (same as EOF), so EOF is detected as failures
+    # that return instantly (SECONDS did not advance).
+    while true; do
+        started="$SECONDS"
+        if IFS= read -rsd '' -n1 -t 1 c <&3; then
+            break
+        fi
+
+        if [ "$((SECONDS - started))" -ge 1 ]; then
+            instant_failures=0
+            continue
+        fi
+
+        instant_failures=$((instant_failures + 1))
+        if [ "$instant_failures" -ge 2 ]; then
+            return 1
+        fi
+    done
+
+    case "$c" in
+        $'\x1b')
+            IFS= read -rsd '' -n1 -t 1 c <&3 || return 0
+
+            case "$c" in
+                "[")
+                    seq=""
+                    while IFS= read -rsd '' -n1 -t 1 c <&3; do
+                        seq="${seq}${c}"
+                        case "$c" in
+                            [A-Za-z~]) break ;;
+                        esac
+                        if [ "${#seq}" -ge 32 ]; then
+                            break
+                        fi
+                    done
+
+                    case "$seq" in
+                        A) MENU_KEY="UP" ;;
+                        B) MENU_KEY="DOWN" ;;
+                        D) MENU_KEY="LEFT" ;;
+                        M)
+                            IFS= read -rsd '' -n3 -t 1 c <&3 || true
+                            ;;
+                    esac
+                    ;;
+                "O")
+                    IFS= read -rsd '' -n1 -t 1 c <&3 || c=""
+                    case "$c" in
+                        A) MENU_KEY="UP" ;;
+                        B) MENU_KEY="DOWN" ;;
+                        D) MENU_KEY="LEFT" ;;
+                    esac
+                    ;;
+            esac
+            ;;
+        $'\r'|$'\n') MENU_KEY="ENTER" ;;
+        " ") MENU_KEY="SPACE" ;;
+        $'\x7f'|$'\x08') MENU_KEY="BACKSPACE" ;;
+    esac
+}
+
+choose_option_by_number() {
+    local prompt="$1"
+    shift
+    local options=("$@")
+    local option
+
+    echo "$prompt" >&2
+    PS3="Choose option: "
+    select option in "${options[@]}"; do
+        if [ -n "${option:-}" ]; then
+            echo "$option"
+            return 0
+        fi
+        echo "Invalid option. Choose a number from 1 to ${#options[@]}." >&2
+    done
+
+    # select ended on stdin EOF.
+    return 1
+}
+
 choose_option() {
+    local allow_back=0
+    local default_option=""
+
+    while true; do
+        case "${1:-}" in
+            --allow-back)
+                allow_back=1
+                shift
+                ;;
+            --default)
+                default_option="$2"
+                shift 2
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     local prompt="$1"
     shift
     local options=("$@")
     local selected=0
-    local key
+    local previous
+    local i
+    local hint="Use Up/Down arrows and Enter."
 
-    if ! { exec 3</dev/tty; } 2>/dev/null; then
-        echo "$prompt" >&2
-        PS3="Choose option: "
-        select option in "${options[@]}"; do
-            if [ -n "${option:-}" ]; then
-                echo "$option"
-                return 0
+    if [ "$allow_back" -eq 1 ]; then
+        hint="Use Up/Down arrows and Enter. Left/Backspace = back."
+    fi
+
+    if [ -n "$default_option" ]; then
+        for i in "${!options[@]}"; do
+            if [ "${options[$i]}" = "$default_option" ]; then
+                selected="$i"
             fi
-            echo "Invalid option. Choose a number from 1 to ${#options[@]}." >&2
         done
     fi
 
+    if ! open_menu_tty; then
+        if choose_option_by_number "$prompt" "${options[@]}"; then
+            return 0
+        fi
+        return 1
+    fi
+
+    if ! menu_fits_terminal $((${#options[@]} + 5)); then
+        close_menu_tty
+        if choose_option_by_number "$prompt" "${options[@]}"; then
+            return 0
+        fi
+        return 1
+    fi
+
+    printf "%s\n\n" "$prompt" >&2
+    for i in "${!options[@]}"; do
+        if [ "$i" -eq "$selected" ]; then
+            printf "> %s\n" "${options[$i]}" >&2
+        else
+            printf "  %s\n" "${options[$i]}" >&2
+        fi
+    done
+    printf "\n%s\n" "$hint" >&2
+
     while true; do
-        printf "\033[2J\033[H" >&2
-        printf "%s\n\n" "$prompt" >&2
-
-        for i in "${!options[@]}"; do
-            if [ "$i" -eq "$selected" ]; then
-                printf "> %s\n" "${options[$i]}" >&2
-            else
-                printf "  %s\n" "${options[$i]}" >&2
-            fi
-        done
-
-        printf "\nUse Up/Down arrows and Enter.\n" >&2
-
-        IFS= read -rsn1 key <&3 || {
-            exec 3<&-
+        read_menu_key || {
+            close_menu_tty
             return 1
         }
 
-        case "$key" in
-            $'\x1b')
-                IFS= read -rsn2 -t 1 key <&3 || key=""
-                case "$key" in
-                    "[A")
-                        if [ "$selected" -gt 0 ]; then
-                            selected=$((selected - 1))
-                        else
-                            selected=$((${#options[@]} - 1))
-                        fi
-                        ;;
-                    "[B")
-                        if [ "$selected" -lt $((${#options[@]} - 1)) ]; then
-                            selected=$((selected + 1))
-                        else
-                            selected=0
-                        fi
-                        ;;
-                esac
+        previous="$selected"
+
+        case "$MENU_KEY" in
+            UP)
+                if [ "$selected" -gt 0 ]; then
+                    selected=$((selected - 1))
+                else
+                    selected=$((${#options[@]} - 1))
+                fi
                 ;;
-            ""|$'\r'|$'\n')
-                printf "\n" >&2
+            DOWN)
+                if [ "$selected" -lt $((${#options[@]} - 1)) ]; then
+                    selected=$((selected + 1))
+                else
+                    selected=0
+                fi
+                ;;
+            ENTER)
+                erase_menu_block $((${#options[@]} + 4))
+                printf "%s %s\n" "$prompt" "${options[$selected]}" >&2
                 echo "${options[$selected]}"
-                exec 3<&-
+                close_menu_tty
                 return 0
                 ;;
+            LEFT|BACKSPACE)
+                if [ "$allow_back" -eq 1 ]; then
+                    erase_menu_block $((${#options[@]} + 4))
+                    close_menu_tty
+                    return 2
+                fi
+                ;;
         esac
+
+        if [ "$selected" -ne "$previous" ]; then
+            rewrite_menu_line "${#options[@]}" "$previous" "  ${options[$previous]}"
+            rewrite_menu_line "${#options[@]}" "$selected" "> ${options[$selected]}"
+        fi
     done
 }
 
@@ -140,7 +338,7 @@ read_optional_plugins_by_number() {
         echo "3) UpdraftPlus" >&2
         echo "4) Advanced Custom Fields" >&2
         printf "Choose options separated by comma (empty = none): " >&2
-        read -r raw_choice
+        read -r raw_choice || return 1
 
         raw_choice="${raw_choice//[[:space:]]/}"
         if [ -z "$raw_choice" ] || [ "$raw_choice" = "1" ]; then
@@ -192,11 +390,12 @@ read_optional_plugins_by_number() {
 
 choose_optional_plugins() {
     local current_plugins="$1"
-    local labels=("None" "All-in-One WP Migration" "UpdraftPlus" "Advanced Custom Fields")
+    local labels=("None" "All-in-One WP Migration" "UpdraftPlus" "Advanced Custom Fields" "Confirm")
     local slugs=("none" "all-in-one-wp-migration" "updraftplus" "advanced-custom-fields")
+    local confirm_index=$((${#labels[@]} - 1))
     local checked=(0 0 0 0)
     local selected=0
-    local key
+    local previous
     local i
     local selected_plugins
 
@@ -214,107 +413,197 @@ choose_optional_plugins() {
         checked[0]=1
     fi
 
-    if ! { exec 3</dev/tty; } 2>/dev/null; then
+    if ! open_menu_tty; then
         read_optional_plugins_by_number
         return 0
     fi
 
-    while true; do
-        printf "\033[2J\033[H" >&2
-        printf "Choose optional plugins:\n\n" >&2
+    if ! menu_fits_terminal $((${#labels[@]} + 5)); then
+        close_menu_tty
+        read_optional_plugins_by_number
+        return 0
+    fi
 
-        for i in "${!labels[@]}"; do
-            if [ "$i" -eq "$selected" ]; then
-                printf "> " >&2
+    optional_plugin_line() {
+        local option_index="$1"
+        local prefix=" "
+        local mark=" "
+
+        if [ "$option_index" -eq "$selected" ]; then
+            prefix=">"
+        fi
+
+        if [ "$option_index" -eq "$confirm_index" ]; then
+            printf "%s %s" "$prefix" "${labels[$option_index]}"
+            return 0
+        fi
+
+        if [ "${checked[$option_index]}" -eq 1 ]; then
+            mark="x"
+        fi
+
+        printf "%s [%s] %s" "$prefix" "$mark" "${labels[$option_index]}"
+    }
+
+    toggle_selected_plugin() {
+        if [ "$selected" -eq 0 ]; then
+            checked=(1 0 0 0)
+        else
+            checked[0]=0
+            if [ "${checked[$selected]}" -eq 1 ]; then
+                checked[$selected]=0
             else
-                printf "  " >&2
+                checked[$selected]=1
             fi
 
-            if [ "${checked[$i]}" -eq 1 ]; then
-                printf "[x] %s\n" "${labels[$i]}" >&2
-            else
-                printf "[ ] %s\n" "${labels[$i]}" >&2
+            if [ "${checked[1]}" -eq 0 ] && [ "${checked[2]}" -eq 0 ] && [ "${checked[3]}" -eq 0 ]; then
+                checked[0]=1
             fi
+        fi
+
+        local line
+        for line in "${!labels[@]}"; do
+            rewrite_menu_line "${#labels[@]}" "$line" "$(optional_plugin_line "$line")"
         done
+    }
 
-        printf "\nUse Up/Down arrows, Space to toggle, Enter to confirm.\n" >&2
+    printf "Choose optional plugins:\n\n" >&2
+    for i in "${!labels[@]}"; do
+        printf "%s\n" "$(optional_plugin_line "$i")" >&2
+    done
+    printf "\nEnter/Space toggles, Confirm continues, Left/Backspace = back.\n" >&2
 
-        IFS= read -rsn1 key <&3 || {
-            exec 3<&-
+    while true; do
+        read_menu_key || {
+            close_menu_tty
             return 1
         }
 
-        case "$key" in
-            $'\x1b')
-                IFS= read -rsn2 -t 1 key <&3 || key=""
-                case "$key" in
-                    "[A")
-                        if [ "$selected" -gt 0 ]; then
-                            selected=$((selected - 1))
-                        else
-                            selected=$((${#labels[@]} - 1))
-                        fi
-                        ;;
-                    "[B")
-                        if [ "$selected" -lt $((${#labels[@]} - 1)) ]; then
-                            selected=$((selected + 1))
-                        else
-                            selected=0
-                        fi
-                        ;;
-                esac
-                ;;
-            " ")
-                if [ "$selected" -eq 0 ]; then
-                    checked=(1 0 0 0)
-                else
-                    checked[0]=0
-                    if [ "${checked[$selected]}" -eq 1 ]; then
-                        checked[$selected]=0
-                    else
-                        checked[$selected]=1
-                    fi
+        previous="$selected"
 
-                    if [ "${checked[1]}" -eq 0 ] && [ "${checked[2]}" -eq 0 ] && [ "${checked[3]}" -eq 0 ]; then
-                        checked[0]=1
-                    fi
+        case "$MENU_KEY" in
+            UP)
+                if [ "$selected" -gt 0 ]; then
+                    selected=$((selected - 1))
+                else
+                    selected=$((${#labels[@]} - 1))
                 fi
                 ;;
-            ""|$'\r'|$'\n')
-                selected_plugins=""
-                for i in 1 2 3; do
-                    if [ "${checked[$i]}" -eq 1 ]; then
-                        if [ -n "$selected_plugins" ]; then
-                            selected_plugins="${selected_plugins},${slugs[$i]}"
-                        else
-                            selected_plugins="${slugs[$i]}"
+            DOWN)
+                if [ "$selected" -lt $((${#labels[@]} - 1)) ]; then
+                    selected=$((selected + 1))
+                else
+                    selected=0
+                fi
+                ;;
+            SPACE)
+                if [ "$selected" -ne "$confirm_index" ]; then
+                    toggle_selected_plugin
+                fi
+                ;;
+            ENTER)
+                if [ "$selected" -ne "$confirm_index" ]; then
+                    toggle_selected_plugin
+                else
+                    selected_plugins=""
+                    for i in 1 2 3; do
+                        if [ "${checked[$i]}" -eq 1 ]; then
+                            if [ -n "$selected_plugins" ]; then
+                                selected_plugins="${selected_plugins},${slugs[$i]}"
+                            else
+                                selected_plugins="${slugs[$i]}"
+                            fi
                         fi
-                    fi
-                done
+                    done
 
-                printf "\n" >&2
-                echo "${selected_plugins:-none}"
-                exec 3<&-
-                return 0
+                    erase_menu_block $((${#labels[@]} + 4))
+                    printf "Choose optional plugins: %s\n" "${selected_plugins:-none}" >&2
+                    echo "${selected_plugins:-none}"
+                    close_menu_tty
+                    return 0
+                fi
+                ;;
+            LEFT|BACKSPACE)
+                erase_menu_block $((${#labels[@]} + 4))
+                close_menu_tty
+                return 2
                 ;;
         esac
+
+        if [ "$selected" -ne "$previous" ]; then
+            rewrite_menu_line "${#labels[@]}" "$previous" "$(optional_plugin_line "$previous")"
+            rewrite_menu_line "${#labels[@]}" "$selected" "$(optional_plugin_line "$selected")"
+        fi
     done
 }
 
 read_port() {
     local prompt="$1"
     local port
+    local failed=0
+    local tty_ui=0
+    local use_tty=0
+    local interactive=0
+    local rc
+
+    # Read from the same place the menus do: with stdin redirected but a
+    # terminal present, stdin would EOF instantly and loop back forever.
+    if [ -t 0 ]; then
+        interactive=1
+    elif { exec 4</dev/tty; } 2>/dev/null; then
+        use_tty=1
+        interactive=1
+    fi
+
+    if [ "$interactive" -eq 1 ] && [ -t 2 ]; then
+        tty_ui=1
+    fi
 
     while true; do
         printf "%s" "$prompt" >&2
-        read -r port
 
-        if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        rc=0
+        if [ "$use_tty" -eq 1 ]; then
+            IFS= read -r port <&4 || rc=$?
+        else
+            IFS= read -r port || rc=$?
+        fi
+
+        if [ "$rc" -ne 0 ]; then
+            if [ "$interactive" -eq 0 ]; then
+                return 1
+            fi
+
+            # Ctrl+D: no newline was echoed, normalize the cursor first so
+            # the erase below does not eat the previous summary line.
+            printf "\n" >&2
+            if [ "$tty_ui" -eq 1 ]; then
+                erase_menu_block $((1 + failed))
+            fi
+            return 2
+        fi
+
+        if [ -z "$port" ]; then
+            if [ "$tty_ui" -eq 1 ]; then
+                erase_menu_block $((1 + failed))
+            fi
+            return 2
+        fi
+
+        if [[ "$port" =~ ^[0-9]+$ ]] && [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+            if [ "$tty_ui" -eq 1 ] && [ "$failed" -eq 1 ]; then
+                erase_menu_block 2
+                printf "%s%s\n" "$prompt" "$port" >&2
+            fi
             echo "$port"
             return 0
         fi
 
+        if [ "$tty_ui" -eq 1 ]; then
+            erase_menu_block $((1 + failed))
+        fi
         echo "Invalid port. Enter a number from 1 to 65535." >&2
+        failed=1
     done
 }
 
@@ -322,15 +611,36 @@ choose_port() {
     local prompt="$1"
     local default_port="$2"
     local port_choice
+    local port
+    local rc
 
-    port_choice="$(choose_option "$prompt" "Standard (${default_port})" "Custom")"
+    while true; do
+        rc=0
+        port_choice="$(choose_option --allow-back "$prompt" "Standard (${default_port})" "Custom")" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            return "$rc"
+        fi
 
-    if [ "$port_choice" = "Standard (${default_port})" ]; then
-        echo "$default_port"
+        if [ "$port_choice" = "Standard (${default_port})" ]; then
+            echo "$default_port"
+            return 0
+        fi
+
+        rc=0
+        port="$(read_port "Enter custom port (empty = back): ")" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+            if [ -t 2 ]; then
+                erase_menu_block 1
+            fi
+            continue
+        fi
+        if [ "$rc" -ne 0 ]; then
+            return "$rc"
+        fi
+
+        echo "$port"
         return 0
-    fi
-
-    read_port "Enter custom port: "
+    done
 }
 
 localhost_url() {
@@ -349,49 +659,126 @@ phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_P
 optional_plugin="$(env_value_or_default "WORDPRESS_OPTIONAL_PLUGIN" "$DEFAULT_OPTIONAL_PLUGIN")"
 previous_php_version="$(get_env_value "PHP_VERSION" "$ENV_FILE")"
 
+# Snapshots: "Current/Default settings" must not apply edits from an
+# abandoned Custom pass reached and backed out of via Left/Backspace.
+initial_php_version="$php_version"
+initial_optional_plugin="$optional_plugin"
+initial_wordpress_port="$wordpress_port"
+initial_phpmyadmin_port="$phpmyadmin_port"
+
 if [ -f "$ENV_FILE" ]; then
-    keep_option="Current settings (PHP ${php_version}, WP port ${wordpress_port}, phpMyAdmin port ${phpmyadmin_port}, plugins: ${optional_plugin})"
+    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, plugins: %s\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$optional_plugin" >&2
+    keep_option="Current settings"
 else
     keep_option="Default settings"
 fi
 
-setup_mode="$(choose_option "Choose setup mode:" "$keep_option" "Custom settings")"
+php_version_label() {
+    if [ "$1" = "$DEFAULT_PHP_VERSION" ]; then
+        echo "Standard (PHP ${DEFAULT_PHP_VERSION})"
+    else
+        echo "PHP $1"
+    fi
+}
 
-if [ "$setup_mode" = "Custom settings" ]; then
-    php_choice="$(choose_option "Choose PHP version:" "Standard (PHP ${DEFAULT_PHP_VERSION})" "PHP 8.1" "PHP 8.2" "PHP 8.4" "PHP 8.5")"
+step=0
+while true; do
+    case "$step" in
+        0)
+            rc=0
+            setup_mode="$(choose_option "Choose setup mode:" "$keep_option" "Custom settings")" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
 
-    case "$php_choice" in
-        "Standard (PHP ${DEFAULT_PHP_VERSION})")
-            php_version="$DEFAULT_PHP_VERSION"
+            if [ "$setup_mode" != "Custom settings" ]; then
+                php_version="$initial_php_version"
+                optional_plugin="$initial_optional_plugin"
+                wordpress_port="$initial_wordpress_port"
+                phpmyadmin_port="$initial_phpmyadmin_port"
+                break
+            fi
+            step=1
             ;;
-        "PHP 8.1")
-            php_version="8.1"
+        1)
+            rc=0
+            php_choice="$(choose_option --allow-back --default "$(php_version_label "$php_version")" "Choose PHP version:" "Standard (PHP ${DEFAULT_PHP_VERSION})" "PHP 8.1" "PHP 8.2" "PHP 8.4" "PHP 8.5")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=0
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            case "$php_choice" in
+                "Standard (PHP ${DEFAULT_PHP_VERSION})")
+                    php_version="$DEFAULT_PHP_VERSION"
+                    ;;
+                "PHP 8.1")
+                    php_version="8.1"
+                    ;;
+                "PHP 8.2")
+                    php_version="8.2"
+                    ;;
+                "PHP 8.4")
+                    php_version="8.4"
+                    ;;
+                "PHP 8.5")
+                    php_version="8.5"
+                    ;;
+            esac
+            step=2
             ;;
-        "PHP 8.2")
-            php_version="8.2"
+        2)
+            rc=0
+            plugin_choice="$(choose_optional_plugins "$optional_plugin")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=1
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            optional_plugin="$plugin_choice"
+            step=3
             ;;
-        "PHP 8.4")
-            php_version="8.4"
+        3)
+            rc=0
+            port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=2
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            wordpress_port="$port_choice"
+            step=4
             ;;
-        "PHP 8.5")
-            php_version="8.5"
+        4)
+            rc=0
+            port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=3
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            if [ "$port_choice" = "$wordpress_port" ]; then
+                echo "phpMyAdmin port must be different from WordPress port (${wordpress_port})." >&2
+                continue
+            fi
+
+            phpmyadmin_port="$port_choice"
+            break
             ;;
     esac
-
-    optional_plugin="$(choose_optional_plugins "$optional_plugin")"
-
-    wordpress_port="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")"
-
-    while true; do
-        phpmyadmin_port="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")"
-
-        if [ "$phpmyadmin_port" != "$wordpress_port" ]; then
-            break
-        fi
-
-        echo "phpMyAdmin port must be different from WordPress port (${wordpress_port})." >&2
-    done
-fi
+done
 
 wordpress_url="$(localhost_url "$wordpress_port")"
 phpmyadmin_url="$(localhost_url "$phpmyadmin_port")"
