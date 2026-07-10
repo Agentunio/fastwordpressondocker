@@ -8,7 +8,7 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 
 | Service | Image | Default URL |
 |---|---|---|
-| WordPress | **latest** core installed on first run (base image `wordpress:php8.3-apache` + wp-cli 2.12.0, custom build) | http://localhost |
+| WordPress | **latest stable** core ensured on every container start (base image `wordpress:php8.3-apache` + wp-cli 2.12.0, custom build) | http://localhost |
 | MariaDB | `mariadb:11.8` | — |
 | phpMyAdmin | `phpmyadmin:5.2.2` | http://localhost:8080 |
 
@@ -66,9 +66,9 @@ Once it's done:
 | Admin | http://localhost/wp-admin | `admin_qmpgfd` / `R40U8zp17YlwvQNkDEKgnhx2!@#` |
 | phpMyAdmin | http://localhost:8080 | logs in automatically (DB user `wp` / `wp`) |
 
-> These are **local development credentials**, hardcoded in `scripts/init.sh` and used only inside your machine. Change them there before the first start if you want different ones.
+> These are the default **local development credentials**. Choose `Custom settings` in `./start.sh` or `./start.ps1` to configure a different administrator.
 
-Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugins).
+Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugins and administrator).
 
 ## Commands
 
@@ -79,7 +79,7 @@ Every subsequent `docker compose up -d` starts instantly and re-applies the `.en
 
 ### `./reset.sh` — restore state-0
 
-Rolls everything back (database + `wp-content` + `wp-config.php` + WordPress core version) to the state saved as **state-0**. Nothing gets updated to *latest*, so the snapshot stays stable.
+Rolls everything back (database + `wp-content` + `wp-config.php` + WordPress core version) to the state saved as **state-0**. The next container start updates the core to the latest stable version; the snapshot itself stays unchanged.
 
 ### `./snapshot.sh` — overwrite state-0
 
@@ -128,7 +128,7 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 
 | Script | Runs when | What it does |
 |---|---|---|
-| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom settings, writes PHP/plugins/port settings into `.env`, starts Compose and rebuilds only when PHP changes |
+| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom PHP, plugins, administrator and ports, writes them into `.env`, starts Compose and rebuilds only when PHP changes |
 | `scripts/entrypoint.sh` | container start | starts `init.sh` in the background, hands control to the official WP entrypoint |
 | `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugins from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
 | `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then syncs local plugin ZIPs |
@@ -136,6 +136,7 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 | `scripts/apply-optional-plugin.sh` | called by init/reset | installs selected optional plugins and removes unselected managed optional plugins |
 | `scripts/install-local-plugins.sh` | called by init/reset | installs and activates every ZIP from `plugins/` |
 | `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
+| `scripts/default-admin-guardian.php` | after every local WordPress request | restores the default administrator after a database import; it lives outside WordPress and is not included in site exports |
 
 A state-0 snapshot is four files in `snapshots/` (generated locally, gitignored):
 

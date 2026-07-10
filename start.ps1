@@ -4,6 +4,9 @@ $DefaultPhpVersion = "8.3"
 $DefaultWordPressPort = "80"
 $DefaultPhpMyAdminPort = "8080"
 $DefaultOptionalPlugin = "none"
+$DefaultWordPressAdminUser = "admin_qmpgfd"
+$DefaultWordPressAdminPassword = "R40U8zp17YlwvQNkDEKgnhx2!@#"
+$DefaultWordPressAdminEmail = "admin@example.com"
 $EnvFile = ".env"
 
 function Set-EnvValue {
@@ -434,6 +437,85 @@ function Read-PortChoice {
     }
 }
 
+function ConvertFrom-SecureValue {
+    param (
+        [System.Security.SecureString] $Value
+    )
+
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
+
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    }
+}
+
+function Read-CustomAdmin {
+    while ($true) {
+        $username = Read-Host "Enter admin username (empty = back)"
+
+        if ([string]::IsNullOrEmpty($username)) {
+            return $null
+        }
+
+        if ($username -match '^[A-Za-z0-9._@-]{1,60}$') {
+            break
+        }
+
+        Write-Host "Invalid username. Use 1-60 letters, numbers, dots, underscores, @ or hyphens."
+    }
+
+    while ($true) {
+        $email = Read-Host "Enter admin email (empty = back)"
+
+        if ([string]::IsNullOrEmpty($email)) {
+            return $null
+        }
+
+        if ($email -match '^[^\s@]+@[^\s@]+\.[^\s@]+$') {
+            break
+        }
+
+        Write-Host "Invalid email address."
+    }
+
+    while ($true) {
+        $password = ConvertFrom-SecureValue (Read-Host "Enter admin password (empty = back)" -AsSecureString)
+
+        if ([string]::IsNullOrEmpty($password)) {
+            return $null
+        }
+
+        $passwordConfirmation = ConvertFrom-SecureValue (Read-Host "Repeat admin password" -AsSecureString)
+
+        if ($password -ceq $passwordConfirmation) {
+            break
+        }
+
+        Write-Host "Passwords do not match."
+    }
+
+    return [PSCustomObject]@{
+        User = $username
+        Email = $email
+        PasswordBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($password))
+    }
+}
+
+function Get-AdminModeLabel {
+    if (
+        $wordPressAdminUser -eq $DefaultWordPressAdminUser -and
+        $wordPressAdminPassword -eq $DefaultWordPressAdminPassword -and
+        [string]::IsNullOrEmpty($wordPressAdminPasswordBase64) -and
+        $wordPressAdminEmail -eq $DefaultWordPressAdminEmail
+    ) {
+        return "Default WordPress admin"
+    }
+
+    return "Custom WordPress admin"
+}
+
 function Get-LocalhostUrl {
     param (
         [string] $Port
@@ -450,17 +532,29 @@ $phpVersion = Get-EnvValueOrDefault "PHP_VERSION" $EnvFile $DefaultPhpVersion
 $wordPressPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPressPort
 $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMyAdminPort
 $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $DefaultOptionalPlugin
+$wordPressAdminUser = Get-EnvValueOrDefault "WORDPRESS_ADMIN_USER" $EnvFile $DefaultWordPressAdminUser
+$wordPressAdminPassword = Get-EnvValueOrDefault "WORDPRESS_ADMIN_PASSWORD" $EnvFile $DefaultWordPressAdminPassword
+$wordPressAdminPasswordBase64 = Get-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $EnvFile
+$wordPressAdminEmail = Get-EnvValueOrDefault "WORDPRESS_ADMIN_EMAIL" $EnvFile $DefaultWordPressAdminEmail
 $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
 
-# Snapshots: "Current/Default settings" must not apply edits from an
-# abandoned Custom pass reached and backed out of via Left/Backspace.
+if (-not [string]::IsNullOrEmpty($wordPressAdminPasswordBase64)) {
+    $wordPressAdminPassword = ""
+}
+
+
 $initialPhpVersion = $phpVersion
 $initialOptionalPlugin = $optionalPlugin
+$initialWordPressAdminUser = $wordPressAdminUser
+$initialWordPressAdminPassword = $wordPressAdminPassword
+$initialWordPressAdminPasswordBase64 = $wordPressAdminPasswordBase64
+$initialWordPressAdminEmail = $wordPressAdminEmail
 $initialWordPressPort = $wordPressPort
 $initialPhpMyAdminPort = $phpMyAdminPort
 
 if (Test-Path $EnvFile) {
-    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin`n`nChoose setup mode:"
+    $adminModeLabel = Get-AdminModeLabel
+    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
     $keepOption = "Current settings"
 } else {
     $setupPrompt = "Choose setup mode:"
@@ -490,6 +584,10 @@ while (-not $done) {
         if ($setupMode -ne "Custom settings") {
             $phpVersion = $initialPhpVersion
             $optionalPlugin = $initialOptionalPlugin
+            $wordPressAdminUser = $initialWordPressAdminUser
+            $wordPressAdminPassword = $initialWordPressAdminPassword
+            $wordPressAdminPasswordBase64 = $initialWordPressAdminPasswordBase64
+            $wordPressAdminEmail = $initialWordPressAdminEmail
             $wordPressPort = $initialWordPressPort
             $phpMyAdminPort = $initialPhpMyAdminPort
             $done = $true
@@ -530,21 +628,51 @@ while (-not $done) {
         $optionalPlugin = $pluginChoice
         $step = 3
     } elseif ($step -eq 3) {
+        $adminChoice = Read-MenuChoice "Choose WordPress administrator:" @(
+            "Default WordPress admin",
+            "Custom WordPress admin"
+        ) -AllowBack -DefaultOption (Get-AdminModeLabel)
+
+        if ($null -eq $adminChoice) {
+            $step = 2
+            continue
+        }
+
+        if ($adminChoice -eq "Default WordPress admin") {
+            $wordPressAdminUser = $DefaultWordPressAdminUser
+            $wordPressAdminPassword = $DefaultWordPressAdminPassword
+            $wordPressAdminPasswordBase64 = ""
+            $wordPressAdminEmail = $DefaultWordPressAdminEmail
+        } else {
+            $customAdmin = Read-CustomAdmin
+
+            if ($null -eq $customAdmin) {
+                continue
+            }
+
+            $wordPressAdminUser = $customAdmin.User
+            $wordPressAdminPassword = ""
+            $wordPressAdminPasswordBase64 = $customAdmin.PasswordBase64
+            $wordPressAdminEmail = $customAdmin.Email
+        }
+
+        $step = 4
+    } elseif ($step -eq 4) {
         $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
 
         if ($null -eq $portChoice) {
-            $step = 2
+            $step = 3
             continue
         }
 
         $wordPressPort = $portChoice
         $phpMyAdminPrompt = "Choose phpMyAdmin port:"
-        $step = 4
+        $step = 5
     } else {
         $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort
 
         if ($null -eq $portChoice) {
-            $step = 3
+            $step = 4
             continue
         }
 
@@ -563,6 +691,10 @@ $phpMyAdminUrl = Get-LocalhostUrl $phpMyAdminPort
 
 Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
 Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
+Set-EnvValue "WORDPRESS_ADMIN_USER" $wordPressAdminUser $EnvFile
+Set-EnvValue "WORDPRESS_ADMIN_PASSWORD" $wordPressAdminPassword $EnvFile
+Set-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $wordPressAdminPasswordBase64 $EnvFile
+Set-EnvValue "WORDPRESS_ADMIN_EMAIL" $wordPressAdminEmail $EnvFile
 Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
 Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
 Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile

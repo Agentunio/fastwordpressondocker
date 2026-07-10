@@ -5,6 +5,9 @@ DEFAULT_PHP_VERSION="8.3"
 DEFAULT_WORDPRESS_PORT="80"
 DEFAULT_PHPMYADMIN_PORT="8080"
 DEFAULT_OPTIONAL_PLUGIN="none"
+DEFAULT_WORDPRESS_ADMIN_USER="admin_qmpgfd"
+DEFAULT_WORDPRESS_ADMIN_PASSWORD="R40U8zp17YlwvQNkDEKgnhx2!@#"
+DEFAULT_WORDPRESS_ADMIN_EMAIL="admin@example.com"
 ENV_FILE=".env"
 
 set_env_value() {
@@ -61,9 +64,6 @@ open_menu_tty() {
         return 1
     fi
 
-    # Menus run inside $(...) subshells where bash 3.2 keeps its internal
-    # SIGINT handler and a blocked read just restarts — the subshell would
-    # survive Ctrl+C and wedge the main shell's exit while it waits.
     trap 'close_menu_tty; exit 130' INT TERM
 
     stty -echo -icanon min 1 time 0 2>/dev/null <&3 || true
@@ -643,6 +643,103 @@ choose_port() {
     done
 }
 
+read_admin_input() {
+    local prompt="$1"
+    local secret="${2:-0}"
+    local value
+    local rc=0
+    local use_tty=0
+
+    if [ ! -t 0 ] && { exec 4</dev/tty; } 2>/dev/null; then
+        use_tty=1
+    fi
+
+    printf "%s" "$prompt" >&2
+
+    if [ "$use_tty" -eq 1 ]; then
+        if [ "$secret" -eq 1 ]; then
+            IFS= read -rs value <&4 || rc=$?
+        else
+            IFS= read -r value <&4 || rc=$?
+        fi
+        exec 4<&-
+    elif [ "$secret" -eq 1 ]; then
+        IFS= read -rs value || rc=$?
+    else
+        IFS= read -r value || rc=$?
+    fi
+
+    if [ "$secret" -eq 1 ]; then
+        printf "\n" >&2
+    fi
+
+    if [ "$rc" -ne 0 ]; then
+        return 1
+    fi
+
+    ADMIN_INPUT="$value"
+}
+
+read_custom_admin() {
+    local username
+    local email
+    local password
+    local password_confirmation
+
+    while true; do
+        read_admin_input "Enter admin username (empty = back): " || return 1
+        username="$ADMIN_INPUT"
+        [ -n "$username" ] || return 2
+
+        if [[ "$username" =~ ^[A-Za-z0-9._@-]{1,60}$ ]]; then
+            break
+        fi
+
+        echo "Invalid username. Use 1-60 letters, numbers, dots, underscores, @ or hyphens." >&2
+    done
+
+    while true; do
+        read_admin_input "Enter admin email (empty = back): " || return 1
+        email="$ADMIN_INPUT"
+        [ -n "$email" ] || return 2
+
+        if [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+            break
+        fi
+
+        echo "Invalid email address." >&2
+    done
+
+    while true; do
+        read_admin_input "Enter admin password (empty = back): " 1 || return 1
+        password="$ADMIN_INPUT"
+        [ -n "$password" ] || return 2
+        read_admin_input "Repeat admin password: " 1 || return 1
+        password_confirmation="$ADMIN_INPUT"
+
+        if [ "$password" = "$password_confirmation" ]; then
+            break
+        fi
+
+        echo "Passwords do not match." >&2
+    done
+
+    custom_admin_user="$username"
+    custom_admin_email="$email"
+    custom_admin_password_base64="$(printf '%s' "$password" | base64 | tr -d '\r\n')"
+}
+
+admin_mode_label() {
+    if [ "$wordpress_admin_user" = "$DEFAULT_WORDPRESS_ADMIN_USER" ] \
+        && [ "$wordpress_admin_password" = "$DEFAULT_WORDPRESS_ADMIN_PASSWORD" ] \
+        && [ -z "$wordpress_admin_password_base64" ] \
+        && [ "$wordpress_admin_email" = "$DEFAULT_WORDPRESS_ADMIN_EMAIL" ]; then
+        echo "Default WordPress admin"
+    else
+        echo "Custom WordPress admin"
+    fi
+}
+
 localhost_url() {
     local port="$1"
 
@@ -657,17 +754,28 @@ php_version="$(env_value_or_default "PHP_VERSION" "$DEFAULT_PHP_VERSION")"
 wordpress_port="$(env_value_or_default "WORDPRESS_PORT" "$DEFAULT_WORDPRESS_PORT")"
 phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_PORT")"
 optional_plugin="$(env_value_or_default "WORDPRESS_OPTIONAL_PLUGIN" "$DEFAULT_OPTIONAL_PLUGIN")"
+wordpress_admin_user="$(env_value_or_default "WORDPRESS_ADMIN_USER" "$DEFAULT_WORDPRESS_ADMIN_USER")"
+wordpress_admin_password="$(env_value_or_default "WORDPRESS_ADMIN_PASSWORD" "$DEFAULT_WORDPRESS_ADMIN_PASSWORD")"
+wordpress_admin_password_base64="$(get_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" "$ENV_FILE")"
+wordpress_admin_email="$(env_value_or_default "WORDPRESS_ADMIN_EMAIL" "$DEFAULT_WORDPRESS_ADMIN_EMAIL")"
 previous_php_version="$(get_env_value "PHP_VERSION" "$ENV_FILE")"
 
-# Snapshots: "Current/Default settings" must not apply edits from an
-# abandoned Custom pass reached and backed out of via Left/Backspace.
+if [ -n "$wordpress_admin_password_base64" ]; then
+    wordpress_admin_password=""
+fi
+
+
 initial_php_version="$php_version"
 initial_optional_plugin="$optional_plugin"
+initial_wordpress_admin_user="$wordpress_admin_user"
+initial_wordpress_admin_password="$wordpress_admin_password"
+initial_wordpress_admin_password_base64="$wordpress_admin_password_base64"
+initial_wordpress_admin_email="$wordpress_admin_email"
 initial_wordpress_port="$wordpress_port"
 initial_phpmyadmin_port="$phpmyadmin_port"
 
 if [ -f "$ENV_FILE" ]; then
-    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, plugins: %s\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$optional_plugin" >&2
+    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, plugins: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$optional_plugin" "$wordpress_admin_user" "$(admin_mode_label)" >&2
     keep_option="Current settings"
 else
     keep_option="Default settings"
@@ -694,6 +802,10 @@ while true; do
             if [ "$setup_mode" != "Custom settings" ]; then
                 php_version="$initial_php_version"
                 optional_plugin="$initial_optional_plugin"
+                wordpress_admin_user="$initial_wordpress_admin_user"
+                wordpress_admin_password="$initial_wordpress_admin_password"
+                wordpress_admin_password_base64="$initial_wordpress_admin_password_base64"
+                wordpress_admin_email="$initial_wordpress_admin_email"
                 wordpress_port="$initial_wordpress_port"
                 phpmyadmin_port="$initial_phpmyadmin_port"
                 break
@@ -746,7 +858,7 @@ while true; do
             ;;
         3)
             rc=0
-            port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")" || rc=$?
+            admin_choice="$(choose_option --allow-back --default "$(admin_mode_label)" "Choose WordPress administrator:" "Default WordPress admin" "Custom WordPress admin")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=2
                 continue
@@ -755,14 +867,48 @@ while true; do
                 exit 1
             fi
 
-            wordpress_port="$port_choice"
+            if [ "$admin_choice" = "Default WordPress admin" ]; then
+                wordpress_admin_user="$DEFAULT_WORDPRESS_ADMIN_USER"
+                wordpress_admin_password="$DEFAULT_WORDPRESS_ADMIN_PASSWORD"
+                wordpress_admin_password_base64=""
+                wordpress_admin_email="$DEFAULT_WORDPRESS_ADMIN_EMAIL"
+            else
+                rc=0
+                read_custom_admin || rc=$?
+                if [ "$rc" -eq 2 ]; then
+                    continue
+                fi
+                if [ "$rc" -ne 0 ]; then
+                    exit 1
+                fi
+
+                wordpress_admin_user="$custom_admin_user"
+                wordpress_admin_password=""
+                wordpress_admin_password_base64="$custom_admin_password_base64"
+                wordpress_admin_email="$custom_admin_email"
+            fi
+
             step=4
             ;;
         4)
             rc=0
-            port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")" || rc=$?
+            port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=3
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            wordpress_port="$port_choice"
+            step=5
+            ;;
+        5)
+            rc=0
+            port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=4
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -785,6 +931,10 @@ phpmyadmin_url="$(localhost_url "$phpmyadmin_port")"
 
 set_env_value "PHP_VERSION" "$php_version" "$ENV_FILE"
 set_env_value "WORDPRESS_OPTIONAL_PLUGIN" "$optional_plugin" "$ENV_FILE"
+set_env_value "WORDPRESS_ADMIN_USER" "$wordpress_admin_user" "$ENV_FILE"
+set_env_value "WORDPRESS_ADMIN_PASSWORD" "$wordpress_admin_password" "$ENV_FILE"
+set_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" "$wordpress_admin_password_base64" "$ENV_FILE"
+set_env_value "WORDPRESS_ADMIN_EMAIL" "$wordpress_admin_email" "$ENV_FILE"
 set_env_value "WORDPRESS_PORT" "$wordpress_port" "$ENV_FILE"
 set_env_value "WORDPRESS_URL" "$wordpress_url" "$ENV_FILE"
 set_env_value "PHPMYADMIN_PORT" "$phpmyadmin_port" "$ENV_FILE"

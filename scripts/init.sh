@@ -3,7 +3,18 @@ set -e
 
 cd /var/www/html
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
+WORDPRESS_ADMIN_USER="${WORDPRESS_ADMIN_USER:-admin_qmpgfd}"
+WORDPRESS_ADMIN_PASSWORD="${WORDPRESS_ADMIN_PASSWORD:-R40U8zp17YlwvQNkDEKgnhx2!@#}"
+WORDPRESS_ADMIN_PASSWORD_BASE64="${WORDPRESS_ADMIN_PASSWORD_BASE64:-}"
+WORDPRESS_ADMIN_EMAIL="${WORDPRESS_ADMIN_EMAIL:-admin@example.com}"
 CORE_CONTENT_REPAIRED=0
+
+if [ -n "$WORDPRESS_ADMIN_PASSWORD_BASE64" ]; then
+    if ! WORDPRESS_ADMIN_PASSWORD="$(printf '%s' "$WORDPRESS_ADMIN_PASSWORD_BASE64" | base64 --decode 2>/dev/null)"; then
+        echo "ERROR: WORDPRESS_ADMIN_PASSWORD_BASE64 is not valid Base64."
+        exit 1
+    fi
+fi
 
 repair_missing_default_theme() {
     if [ -d wp-content/themes/twentytwentyfive ]; then
@@ -82,9 +93,9 @@ wp --allow-root core download --force
 wp --allow-root core install \
     --url="$WORDPRESS_URL" \
     --title="Fast WordPress on Docker" \
-    --admin_user='admin_qmpgfd' \
-    --admin_password='R40U8zp17YlwvQNkDEKgnhx2!@#' \
-    --admin_email=admin@example.com \
+    --admin_user="$WORDPRESS_ADMIN_USER" \
+    --admin_password="$WORDPRESS_ADMIN_PASSWORD" \
+    --admin_email="$WORDPRESS_ADMIN_EMAIL" \
     --skip-email
 
 echo "[init] Disabling WordPress core auto-updates..."
