@@ -21,6 +21,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     environment:
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: wordpress
@@ -43,6 +45,11 @@ services:
       - ./snapshots:/snapshots
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
 
   phpmyadmin:
     image: phpmyadmin:5.2.2

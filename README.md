@@ -1,6 +1,6 @@
 # Fast WordPress on Docker
 
-A disposable local WordPress environment with a restorable base-state snapshot (**state-0**). Clone it, run `./start.sh` or `docker compose up -d`, and about a minute later you have a fully installed WordPress with an admin account, plugins and phpMyAdmin — no install wizard, no manual configuration.
+A disposable local WordPress environment with a restorable base-state snapshot (**state-0**). Clone it, run `./start.sh` or `docker compose up -d`, and about a minute later you have a fully installed WordPress with an admin account, plugins, phpMyAdmin and Mailpit — no install wizard, no manual configuration.
 
 Built for plugin/theme testing and site-migration workflows: break things freely, then restore the base state with a single command.
 
@@ -11,6 +11,7 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 | WordPress | **latest stable** core ensured on every container start (base image `wordpress:php8.3-apache` + wp-cli 2.12.0, custom build) | http://localhost |
 | MariaDB | `mariadb:11.8` | — |
 | phpMyAdmin | `phpmyadmin:5.2.2` | http://localhost:8080 |
+| Mailpit | `axllent/mailpit:v1.30.0` | http://localhost:8025 |
 
 ## Requirements
 
@@ -45,14 +46,15 @@ In `Custom settings`, choose:
 - Optional plugins: `All-in-One WP Migration`, `UpdraftPlus` and `Advanced Custom Fields` can be selected together, or leave `None`.
 - WordPress port: `Standard (80)` or a custom port.
 - phpMyAdmin port: `Standard (8080)` or a custom port.
+- Mailpit port: `Standard (8025)` or a custom port.
 
 The WordPress URL is generated automatically from the selected WordPress port.
 
-If you do not need the interactive setup, `docker compose up -d` still uses standard PHP `8.3`, WordPress port `80` and phpMyAdmin port `8080`.
+If you do not need the interactive setup, `docker compose up -d` still uses standard PHP `8.3`, WordPress port `80`, phpMyAdmin port `8080` and Mailpit port `8025`.
 
 The first start takes about a minute and is fully automated:
 
-1. Builds the image (official WordPress image + wp-cli) and pulls MariaDB / phpMyAdmin.
+1. Builds the image (official WordPress image + wp-cli) and pulls MariaDB / phpMyAdmin / Mailpit.
 2. Downloads and installs the **latest** WordPress core — no install wizard. Core auto-updates are disabled, so the version stays frozen in state-0.
 3. Installs the default theme and the configured plugins (see [Plugins](#plugins)).
 4. Removes WordPress's default Akismet and Hello Dolly plugins.
@@ -65,6 +67,7 @@ Once it's done:
 | Site | http://localhost | — |
 | Admin | http://localhost/wp-admin | `admin_qmpgfd` / `R40U8zp17YlwvQNkDEKgnhx2!@#` |
 | phpMyAdmin | http://localhost:8080 | logs in automatically (DB user `wp` / `wp`) |
+| Mailpit | http://localhost:8025 | no login required |
 
 > These are the default **local development credentials**. Choose `Custom settings` in `./start.sh` or `./start.ps1` to configure a different administrator.
 
@@ -107,7 +110,11 @@ Every clone of this repo is an independent environment. Docker Compose uses the 
 ./start.sh
 ```
 
-Choose `Custom settings`, then pick custom WordPress and phpMyAdmin ports. The wrapper writes `.env` for you, including a matching `WORDPRESS_URL`, which is re-applied to `home`/`siteurl` on every container start — an existing installation adapts to new ports automatically.
+Choose `Custom settings`, then pick custom WordPress, phpMyAdmin and Mailpit ports. The wrapper writes `.env` for you, including a matching `WORDPRESS_URL`, which is re-applied to `home`/`siteurl` on every container start — an existing installation adapts to new ports automatically.
+
+## Testing email with Mailpit
+
+Messages sent through WordPress `wp_mail()` are captured by Mailpit automatically. Open http://localhost:8025 to inspect their HTML, text, headers, links and attachments.
 
 ## Plugins
 
@@ -152,8 +159,8 @@ WordPress core and the database live in named Docker volumes (`wp_data`, `db_dat
 ## Project structure
 
 ```
-docker-compose.yml          # services: db (MariaDB 11), wordpress (custom build), phpmyadmin
-Dockerfile                  # wordpress:php${PHP_VERSION}-apache + pinned wp-cli + mariadb-client
+docker-compose.yml          # services: db, wordpress, phpmyadmin, mailpit
+Dockerfile                  # wordpress:php${PHP_VERSION}-apache + wp-cli + MariaDB client
 scripts/
   entrypoint.sh             # custom container entrypoint
   init.sh                   # first install / restore from state-0
@@ -176,7 +183,7 @@ snapshot.sh / snapshot.ps1  # host wrappers (macOS+Linux / Windows)
 4. Want a different starting point? Set the site up the way you like and run `./snapshot.sh`.
 5. Repeat.
 
-**Port 80 (or 8080) is already in use**
+**Port 80, 8080 or 8025 is already in use**
 
 Run `./start.sh`, choose `Custom settings`, and pick free ports.
 

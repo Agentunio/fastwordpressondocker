@@ -4,6 +4,7 @@ set -euo pipefail
 DEFAULT_PHP_VERSION="8.3"
 DEFAULT_WORDPRESS_PORT="80"
 DEFAULT_PHPMYADMIN_PORT="8080"
+DEFAULT_MAILPIT_PORT="8025"
 DEFAULT_OPTIONAL_PLUGIN="none"
 DEFAULT_WORDPRESS_ADMIN_USER="admin_qmpgfd"
 DEFAULT_WORDPRESS_ADMIN_PASSWORD="R40U8zp17YlwvQNkDEKgnhx2!@#"
@@ -753,6 +754,7 @@ localhost_url() {
 php_version="$(env_value_or_default "PHP_VERSION" "$DEFAULT_PHP_VERSION")"
 wordpress_port="$(env_value_or_default "WORDPRESS_PORT" "$DEFAULT_WORDPRESS_PORT")"
 phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_PORT")"
+mailpit_port="$(env_value_or_default "MAILPIT_PORT" "$DEFAULT_MAILPIT_PORT")"
 optional_plugin="$(env_value_or_default "WORDPRESS_OPTIONAL_PLUGIN" "$DEFAULT_OPTIONAL_PLUGIN")"
 wordpress_admin_user="$(env_value_or_default "WORDPRESS_ADMIN_USER" "$DEFAULT_WORDPRESS_ADMIN_USER")"
 wordpress_admin_password="$(env_value_or_default "WORDPRESS_ADMIN_PASSWORD" "$DEFAULT_WORDPRESS_ADMIN_PASSWORD")"
@@ -773,9 +775,10 @@ initial_wordpress_admin_password_base64="$wordpress_admin_password_base64"
 initial_wordpress_admin_email="$wordpress_admin_email"
 initial_wordpress_port="$wordpress_port"
 initial_phpmyadmin_port="$phpmyadmin_port"
+initial_mailpit_port="$mailpit_port"
 
 if [ -f "$ENV_FILE" ]; then
-    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, plugins: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$optional_plugin" "$wordpress_admin_user" "$(admin_mode_label)" >&2
+    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$mailpit_port" "$optional_plugin" "$wordpress_admin_user" "$(admin_mode_label)" >&2
     keep_option="Current settings"
 else
     keep_option="Default settings"
@@ -808,6 +811,7 @@ while true; do
                 wordpress_admin_email="$initial_wordpress_admin_email"
                 wordpress_port="$initial_wordpress_port"
                 phpmyadmin_port="$initial_phpmyadmin_port"
+                mailpit_port="$initial_mailpit_port"
                 break
             fi
             step=1
@@ -921,6 +925,25 @@ while true; do
             fi
 
             phpmyadmin_port="$port_choice"
+            step=6
+            ;;
+        6)
+            rc=0
+            port_choice="$(choose_port "Choose Mailpit port:" "$DEFAULT_MAILPIT_PORT")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=5
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            if [ "$port_choice" = "$wordpress_port" ] || [ "$port_choice" = "$phpmyadmin_port" ]; then
+                echo "Mailpit port must be different from WordPress and phpMyAdmin ports." >&2
+                continue
+            fi
+
+            mailpit_port="$port_choice"
             break
             ;;
     esac
@@ -928,6 +951,7 @@ done
 
 wordpress_url="$(localhost_url "$wordpress_port")"
 phpmyadmin_url="$(localhost_url "$phpmyadmin_port")"
+mailpit_url="$(localhost_url "$mailpit_port")"
 
 set_env_value "PHP_VERSION" "$php_version" "$ENV_FILE"
 set_env_value "WORDPRESS_OPTIONAL_PLUGIN" "$optional_plugin" "$ENV_FILE"
@@ -938,10 +962,12 @@ set_env_value "WORDPRESS_ADMIN_EMAIL" "$wordpress_admin_email" "$ENV_FILE"
 set_env_value "WORDPRESS_PORT" "$wordpress_port" "$ENV_FILE"
 set_env_value "WORDPRESS_URL" "$wordpress_url" "$ENV_FILE"
 set_env_value "PHPMYADMIN_PORT" "$phpmyadmin_port" "$ENV_FILE"
+set_env_value "MAILPIT_PORT" "$mailpit_port" "$ENV_FILE"
 
 echo "Starting WordPress with PHP ${php_version}..."
 echo "WordPress URL: ${wordpress_url}"
 echo "phpMyAdmin URL: ${phpmyadmin_url}"
+echo "Mailpit URL: ${mailpit_url}"
 
 if [ "$previous_php_version" != "$php_version" ]; then
     echo "Rebuilding image because PHP version changed."

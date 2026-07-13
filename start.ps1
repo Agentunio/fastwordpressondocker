@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $DefaultPhpVersion = "8.3"
 $DefaultWordPressPort = "80"
 $DefaultPhpMyAdminPort = "8080"
+$DefaultMailpitPort = "8025"
 $DefaultOptionalPlugin = "none"
 $DefaultWordPressAdminUser = "admin_qmpgfd"
 $DefaultWordPressAdminPassword = "R40U8zp17YlwvQNkDEKgnhx2!@#"
@@ -531,6 +532,7 @@ function Get-LocalhostUrl {
 $phpVersion = Get-EnvValueOrDefault "PHP_VERSION" $EnvFile $DefaultPhpVersion
 $wordPressPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPressPort
 $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMyAdminPort
+$mailpitPort = Get-EnvValueOrDefault "MAILPIT_PORT" $EnvFile $DefaultMailpitPort
 $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $DefaultOptionalPlugin
 $wordPressAdminUser = Get-EnvValueOrDefault "WORDPRESS_ADMIN_USER" $EnvFile $DefaultWordPressAdminUser
 $wordPressAdminPassword = Get-EnvValueOrDefault "WORDPRESS_ADMIN_PASSWORD" $EnvFile $DefaultWordPressAdminPassword
@@ -551,10 +553,11 @@ $initialWordPressAdminPasswordBase64 = $wordPressAdminPasswordBase64
 $initialWordPressAdminEmail = $wordPressAdminEmail
 $initialWordPressPort = $wordPressPort
 $initialPhpMyAdminPort = $phpMyAdminPort
+$initialMailpitPort = $mailpitPort
 
 if (Test-Path $EnvFile) {
     $adminModeLabel = Get-AdminModeLabel
-    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, plugins: $optionalPlugin, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
+    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, Mailpit port $mailpitPort, plugins: $optionalPlugin, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
     $keepOption = "Current settings"
 } else {
     $setupPrompt = "Choose setup mode:"
@@ -590,6 +593,7 @@ while (-not $done) {
             $wordPressAdminEmail = $initialWordPressAdminEmail
             $wordPressPort = $initialWordPressPort
             $phpMyAdminPort = $initialPhpMyAdminPort
+            $mailpitPort = $initialMailpitPort
             $done = $true
         } else {
             $step = 1
@@ -668,7 +672,7 @@ while (-not $done) {
         $wordPressPort = $portChoice
         $phpMyAdminPrompt = "Choose phpMyAdmin port:"
         $step = 5
-    } else {
+    } elseif ($step -eq 5) {
         $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort
 
         if ($null -eq $portChoice) {
@@ -682,12 +686,28 @@ while (-not $done) {
         }
 
         $phpMyAdminPort = $portChoice
+        $step = 6
+    } else {
+        $portChoice = Read-PortChoice "Choose Mailpit port:" $DefaultMailpitPort
+
+        if ($null -eq $portChoice) {
+            $step = 5
+            continue
+        }
+
+        if ($portChoice -eq $wordPressPort -or $portChoice -eq $phpMyAdminPort) {
+            Write-Host "Mailpit port must be different from WordPress and phpMyAdmin ports."
+            continue
+        }
+
+        $mailpitPort = $portChoice
         $done = $true
     }
 }
 
 $wordPressUrl = Get-LocalhostUrl $wordPressPort
 $phpMyAdminUrl = Get-LocalhostUrl $phpMyAdminPort
+$mailpitUrl = Get-LocalhostUrl $mailpitPort
 
 Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
 Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
@@ -698,6 +718,7 @@ Set-EnvValue "WORDPRESS_ADMIN_EMAIL" $wordPressAdminEmail $EnvFile
 Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
 Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
 Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile
+Set-EnvValue "MAILPIT_PORT" $mailpitPort $EnvFile
 
 if (-not [Console]::IsInputRedirected) {
     Clear-Host
@@ -706,6 +727,7 @@ if (-not [Console]::IsInputRedirected) {
 Write-Host "Starting WordPress with PHP $phpVersion..."
 Write-Host "WordPress URL: $wordPressUrl"
 Write-Host "phpMyAdmin URL: $phpMyAdminUrl"
+Write-Host "Mailpit URL: $mailpitUrl"
 
 if ($previousPhpVersion -ne $phpVersion) {
     Write-Host "Rebuilding image because PHP version changed."
