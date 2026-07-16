@@ -34,6 +34,10 @@ fi
 echo "Resetting database..."
 wp --allow-root db reset --yes
 wp --allow-root db import /snapshots/state-0.sql
+
+echo "Restoring wp-config.php..."
+cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
+
 wp --allow-root option update home "$WORDPRESS_URL"
 wp --allow-root option update siteurl "$WORDPRESS_URL"
 
@@ -42,9 +46,6 @@ find /var/www/html/wp-content -mindepth 1 -delete
 
 echo "Restoring wp-content from snapshot..."
 tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
-
-echo "Restoring wp-config.php..."
-cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
 bash /scripts/apply-optional-plugin.sh
 bash /scripts/install-local-plugins.sh

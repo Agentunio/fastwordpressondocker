@@ -42,6 +42,7 @@ services:
       - ./scripts:/scripts:ro
       - ./scripts/wordpress-admin-guardian.ini:/usr/local/etc/php/conf.d/wordpress-admin-guardian.ini:ro
       - ./plugins:/plugins:ro
+      - ./manual:/manual:ro
       - ./snapshots:/snapshots
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]

@@ -1,8 +1,18 @@
 #!/bin/bash
 set -e
 
-# Run init in background after original entrypoint completes.
-# init.sh polls for wp-load.php and DB readiness, so it can race safely.
-(bash /scripts/init.sh 2>&1 | sed 's/^/[init] /') &
+INIT_STATUS_FILE="/tmp/fast-wordpress-init.status"
+printf 'running\n' > "$INIT_STATUS_FILE"
+
+
+(
+    set -o pipefail
+
+    if bash /scripts/init.sh 2>&1 | sed 's/^/[init] /'; then
+        printf 'ready\n' > "$INIT_STATUS_FILE"
+    else
+        printf 'failed\n' > "$INIT_STATUS_FILE"
+    fi
+) &
 
 exec docker-entrypoint.sh "$@"
