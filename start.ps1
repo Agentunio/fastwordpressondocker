@@ -1,3 +1,7 @@
+param (
+    [switch] $ManualRestore
+)
+
 $ErrorActionPreference = "Stop"
 
 $DefaultPhpVersion = "8.3"
@@ -734,4 +738,14 @@ if ($previousPhpVersion -ne $phpVersion) {
     docker compose up -d --build
 } else {
     docker compose up -d
+}
+
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($ManualRestore) {
+    Write-Host "==> Restoring WordPress from manual backup files..." -ForegroundColor Cyan
+    docker compose exec -T wordpress bash /scripts/restore-manual.sh
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "Manual restore complete." -ForegroundColor Green
 }

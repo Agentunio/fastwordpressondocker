@@ -14,6 +14,12 @@ snapshots/*
 plugins/*
 !plugins/.gitkeep
 
+manual/database/*
+!manual/database/.gitkeep
+
+manual/content/*
+!manual/content/.gitkeep
+
 wordpress/
 
 wp-content/

@@ -10,6 +10,25 @@ DEFAULT_WORDPRESS_ADMIN_USER="admin_qmpgfd"
 DEFAULT_WORDPRESS_ADMIN_PASSWORD="R40U8zp17YlwvQNkDEKgnhx2!@#"
 DEFAULT_WORDPRESS_ADMIN_EMAIL="admin@example.com"
 ENV_FILE=".env"
+manual_restore=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --manual-restore)
+            manual_restore=1
+            ;;
+        -h|--help)
+            echo "Usage: bash ./start.sh [--manual-restore]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: bash ./start.sh [--manual-restore]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
 
 set_env_value() {
     local key="$1"
@@ -974,4 +993,10 @@ if [ "$previous_php_version" != "$php_version" ]; then
     docker compose up -d --build
 else
     docker compose up -d
+fi
+
+if [ "$manual_restore" -eq 1 ]; then
+    echo "==> Restoring WordPress from manual backup files..."
+    docker compose exec -T wordpress bash /scripts/restore-manual.sh
+    echo "Manual restore complete."
 fi

@@ -90,6 +90,49 @@ Saves the **current** WordPress state as the new state-0. Use it when you delibe
 
 Under the hood: `docker compose exec -T wordpress bash /scripts/snapshot.sh`
 
+### Manual restore during start
+
+Restores a site without a migration plugin. Place the backup files under `manual/`, then start the environment in manual restore mode:
+
+```bash
+# macOS / Linux
+./start.sh --manual-restore
+
+# Windows PowerShell
+.\start.ps1 -ManualRestore
+```
+
+A normal start without this option never imports files from `manual/`. To restore into an environment that is already running without reopening the setup menu:
+
+```bash
+bash ./restore-manual.sh
+.\restore-manual.ps1
+```
+
+Accepted inputs:
+
+```text
+manual/
+  database/
+    site.sql                 # exactly one .sql file
+  content/
+    site.zip                 # exactly one ZIP containing wp-content or its contents
+    # OR
+    wp-content/              # an unpacked wp-content folder
+```
+
+The database and `wp-content` are optional independently, so you can restore either one or both. When importing a database, the script:
+
+- detects custom WordPress table prefixes
+- safely replaces the original site URL with the configured local `WORDPRESS_URL`, including serialized data
+- updates the WordPress database schema when needed
+
+The restore replaces the supplied parts of the current site. It rejects multiple SQL/ZIP files, a ZIP plus an unpacked folder, invalid archives, full WordPress archives and symbolic links before wiping `wp-content`. Run `./snapshot.sh` afterwards if the restored site should become the new state-0.
+
+> Files under `manual/database/` and `manual/content/` are gitignored because database dumps and uploads can contain credentials or personal data. Only the folder structure is committed.
+
+> Restore only trusted backups. SQL replaces the current database, and PHP files inside `wp-content` can execute when WordPress handles a request.
+
 ### Starting over
 
 ```bash
@@ -166,11 +209,16 @@ scripts/
   init.sh                   # first install / restore from state-0
   reset.sh                  # restore state-0
   snapshot.sh               # save the current state as state-0
+  restore-manual.sh         # restore a local SQL dump and/or wp-content
   remove-default-plugins.sh # delete Akismet & Hello Dolly
 plugins/                    # premium plugin ZIPs (gitignored, local only)
+manual/
+  database/                 # local SQL dump (gitignored)
+  content/                  # local wp-content ZIP/folder (gitignored)
 snapshots/                  # state-0.* files (gitignored, generated locally)
 wp-content/                 # live wp-content of the running site (gitignored)
 start.sh / start.ps1        # interactive host wrappers (macOS+Linux / Windows)
+restore-manual.sh / .ps1    # restore local files into the running site
 reset.sh / reset.ps1        # host wrappers (macOS+Linux / Windows)
 snapshot.sh / snapshot.ps1  # host wrappers (macOS+Linux / Windows)
 ```
