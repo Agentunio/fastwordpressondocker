@@ -31,13 +31,8 @@ state0_snapshot_complete() {
 }
 
 create_state0_snapshot() {
-    mkdir -p /snapshots
-
     echo "[init] Creating state-0 snapshot..."
-    wp --allow-root core version > /snapshots/state-0-core-version
-    wp --allow-root db export /snapshots/state-0.sql
-    tar czf /snapshots/state-0-wp-content.tar.gz -C /var/www/html wp-content
-    cp /var/www/html/wp-config.php /snapshots/state-0-wp-config.php
+    bash /scripts/snapshot.sh
 }
 
 for i in $(seq 1 60); do
