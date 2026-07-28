@@ -295,7 +295,7 @@ if [ -n "$ZIP_FILE" ] || [ -n "$CONTENT_FOLDER" ]; then
     restore_content
 fi
 
-bash /scripts/apply-optional-plugin.sh
+bash /scripts/apply-optional-plugin.sh --preserve-unselected
 bash /scripts/install-local-plugins.sh
 chown -R www-data:www-data "$WORDPRESS_DIR/wp-content" "$WORDPRESS_DIR/wp-config.php"
 
