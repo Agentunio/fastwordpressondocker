@@ -166,7 +166,7 @@ On a fresh install `scripts/init.sh` installs and activates:
 - the optional plugins selected in `./start.sh` / `./start.ps1`: **All-in-One WP Migration**, **UpdraftPlus**, **Advanced Custom Fields** or none
 - every `*.zip` found in `plugins/` (premium / custom plugins), also synced on later starts and resets
 
-The optional plugins can be changed later: run `./start.sh` again and adjust the selection — selected plugins get installed and unselected managed optional plugins are removed automatically. state-0 still contains the old choice — run `./snapshot.sh` if the new selection should become part of the base state.
+The optional plugins can be changed later: run `./start.sh` again and adjust the selection. Selected plugins get installed and activated. A plugin installed through this selector is removed when it is later deselected. Plugins that only came from a manual restore are left unchanged. Run `./snapshot.sh` if the new selection should become part of state-0.
 
 To add a plugin → drop its ZIP into `plugins/`. It gets installed on fresh installs, later starts and resets.
 
@@ -183,7 +183,7 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 | `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugins from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
 | `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then syncs local plugin ZIPs |
 | `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, copies `wp-config.php` into `snapshots/` |
-| `scripts/apply-optional-plugin.sh` | called by init/reset | installs selected optional plugins and removes unselected managed optional plugins |
+| `scripts/apply-optional-plugin.sh` | called by init/reset | installs and activates selected optional plugins and removes only plugins deselected after an earlier selection |
 | `scripts/install-local-plugins.sh` | called by init/reset | installs and activates every ZIP from `plugins/` |
 | `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
 | `scripts/default-admin-guardian.php` | after every local WordPress request | restores the default administrator after a database import; it lives outside WordPress and is not included in site exports |
