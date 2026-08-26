@@ -44,6 +44,12 @@ services:
       - ./plugins:/plugins:ro
       - ./manual:/manual:ro
       - ./snapshots:/snapshots
+    healthcheck:
+      test: ["CMD", "grep", "-qx", "ready", "/tmp/fast-wordpress-init.status"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 300s
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]
 

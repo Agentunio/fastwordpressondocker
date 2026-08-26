@@ -12,5 +12,5 @@ fi
 
 for zip in "${zip_files[@]}"; do
     echo "[plugins] Installing local plugin: $zip"
-    wp --allow-root plugin install "$zip" --activate --force
+    wp --allow-root plugin install "$zip" --activate --force --skip-plugins --skip-themes
 done

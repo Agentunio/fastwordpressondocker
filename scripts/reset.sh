@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e
 
+fix_wordpress_ownership() {
+    find /var/www/html -mindepth 1 \
+        ! -path /var/www/html/wp-cli.yml \
+        ! -path /var/www/html/wp-cli.local.yml \
+        \( ! -user www-data -o ! -group www-data \) \
+        -exec chown -h www-data:www-data {} + || true
+}
+
+trap fix_wordpress_ownership EXIT
+
 for i in $(seq 1 120); do
     if [ -f /snapshots/state-0.sql ] && [ -f /snapshots/state-0-wp-content.tar.gz ] && [ -f /snapshots/state-0-wp-config.php ]; then
         break
@@ -38,8 +48,8 @@ wp --allow-root db import /snapshots/state-0.sql
 echo "Restoring wp-config.php..."
 cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
-wp --allow-root option update home "$WORDPRESS_URL"
-wp --allow-root option update siteurl "$WORDPRESS_URL"
+wp --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
+wp --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
 
 echo "Wiping wp-content..."
 find /var/www/html/wp-content -mindepth 1 -delete
@@ -49,7 +59,5 @@ tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
 
 bash /scripts/apply-optional-plugin.sh
 bash /scripts/install-local-plugins.sh
-
-chown -R www-data:www-data /var/www/html/wp-content /var/www/html/wp-config.php
 
 echo "Reset complete. Restored state-0."

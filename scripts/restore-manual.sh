@@ -9,10 +9,20 @@ INIT_STATUS_FILE="/tmp/fast-wordpress-init.status"
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 TEMP_DIR=""
 
+fix_wordpress_ownership() {
+    find "$WORDPRESS_DIR" -mindepth 1 \
+        ! -path "$WORDPRESS_DIR/wp-cli.yml" \
+        ! -path "$WORDPRESS_DIR/wp-cli.local.yml" \
+        \( ! -user www-data -o ! -group www-data \) \
+        -exec chown -h www-data:www-data {} + || true
+}
+
 cleanup() {
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
         rm -rf -- "$TEMP_DIR"
     fi
+
+    fix_wordpress_ownership
 }
 
 fail() {
@@ -246,21 +256,22 @@ restore_database() {
     table_prefix="$(detect_table_prefix)"
     wp --path="$WORDPRESS_DIR" --allow-root config set table_prefix "$table_prefix" --type=variable
 
-    if ! wp --path="$WORDPRESS_DIR" --allow-root core is-installed; then
+    if ! wp --path="$WORDPRESS_DIR" --allow-root core is-installed --skip-plugins --skip-themes; then
         fail "The SQL file does not contain a complete WordPress database."
     fi
 
-    imported_url="$(wp --path="$WORDPRESS_DIR" --allow-root option get home 2>/dev/null || true)"
+    imported_url="$(wp --path="$WORDPRESS_DIR" --allow-root option get home --skip-plugins --skip-themes 2>/dev/null || true)"
     if [ -n "$imported_url" ] && [ "$imported_url" != "$WORDPRESS_URL" ]; then
         echo "[manual-restore] Replacing $imported_url with $WORDPRESS_URL..."
         wp --path="$WORDPRESS_DIR" --allow-root search-replace \
             "$imported_url" "$WORDPRESS_URL" \
-            --all-tables-with-prefix --skip-columns=guid --report-changed-only
+            --all-tables-with-prefix --skip-columns=guid --report-changed-only \
+            --skip-plugins --skip-themes
     fi
 
-    wp --path="$WORDPRESS_DIR" --allow-root option update home "$WORDPRESS_URL"
-    wp --path="$WORDPRESS_DIR" --allow-root option update siteurl "$WORDPRESS_URL"
-    wp --path="$WORDPRESS_DIR" --allow-root core update-db
+    wp --path="$WORDPRESS_DIR" --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
+    wp --path="$WORDPRESS_DIR" --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
+    wp --path="$WORDPRESS_DIR" --allow-root core update-db --skip-plugins --skip-themes
 }
 
 prepare_content() {
@@ -297,6 +308,5 @@ fi
 
 bash /scripts/apply-optional-plugin.sh --preserve-unselected
 bash /scripts/install-local-plugins.sh
-chown -R www-data:www-data "$WORDPRESS_DIR/wp-content" "$WORDPRESS_DIR/wp-config.php"
 
 echo "[manual-restore] Complete. Run snapshot.sh if this should become the new state-0."

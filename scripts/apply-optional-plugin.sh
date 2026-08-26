@@ -157,20 +157,20 @@ done
 
 for slug in "${MANAGED_OPTIONAL_PLUGINS[@]}"; do
     if optional_plugin_is_selected "$slug"; then
-        if ! wp --allow-root plugin is-installed "$slug" 2>/dev/null; then
+        if ! wp --allow-root plugin is-installed "$slug" --skip-plugins --skip-themes 2>/dev/null; then
             echo "[plugins] Installing optional plugin: $slug"
-            wp --allow-root plugin install "$slug"
+            wp --allow-root plugin install "$slug" --skip-plugins --skip-themes
         fi
-        if ! wp --allow-root plugin is-active "$slug" 2>/dev/null; then
-            wp --allow-root plugin activate "$slug"
+        if ! wp --allow-root plugin is-active "$slug" --skip-plugins --skip-themes 2>/dev/null; then
+            wp --allow-root plugin activate "$slug" --skip-plugins --skip-themes
         fi
     elif [ "$PRESERVE_UNSELECTED" -eq 0 ] && optional_plugin_was_selected "$slug"; then
-        if wp --allow-root plugin is-installed "$slug" 2>/dev/null; then
+        if wp --allow-root plugin is-installed "$slug" --skip-plugins --skip-themes 2>/dev/null; then
             echo "[plugins] Removing deselected optional plugin: $slug"
-            if wp --allow-root plugin is-active "$slug" 2>/dev/null; then
-                wp --allow-root plugin deactivate "$slug"
+            if wp --allow-root plugin is-active "$slug" --skip-plugins --skip-themes 2>/dev/null; then
+                wp --allow-root plugin deactivate "$slug" --skip-plugins --skip-themes
             fi
-            wp --allow-root plugin delete "$slug"
+            wp --allow-root plugin delete "$slug" --skip-plugins --skip-themes
         fi
     fi
 done
