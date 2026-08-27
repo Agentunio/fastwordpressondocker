@@ -9,6 +9,7 @@ $DefaultWordPressPort = "80"
 $DefaultPhpMyAdminPort = "8080"
 $DefaultMailpitPort = "8025"
 $DefaultOptionalPlugin = "none"
+$DefaultWordPressObjectCache = "none"
 $DefaultWordPressAdminUser = "admin_qmpgfd"
 $DefaultWordPressAdminPassword = "R40U8zp17YlwvQNkDEKgnhx2!@#"
 $DefaultWordPressAdminEmail = "admin@example.com"
@@ -422,7 +423,7 @@ function Read-PortChoice {
     )
 
     while ($true) {
-        $portChoice = Read-MenuChoice $Prompt @("Standard ($DefaultPort)", "Custom") -AllowBack
+        $portChoice = Read-MenuChoice -Prompt $Prompt -Options @("Standard ($DefaultPort)", "Custom") -AllowBack
 
         if ($null -eq $portChoice) {
             return $null
@@ -538,11 +539,17 @@ $wordPressPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPre
 $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMyAdminPort
 $mailpitPort = Get-EnvValueOrDefault "MAILPIT_PORT" $EnvFile $DefaultMailpitPort
 $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $DefaultOptionalPlugin
+$wordPressObjectCache = (Get-EnvValueOrDefault "WORDPRESS_OBJECT_CACHE" $EnvFile $DefaultWordPressObjectCache).ToLowerInvariant()
 $wordPressAdminUser = Get-EnvValueOrDefault "WORDPRESS_ADMIN_USER" $EnvFile $DefaultWordPressAdminUser
 $wordPressAdminPassword = Get-EnvValueOrDefault "WORDPRESS_ADMIN_PASSWORD" $EnvFile $DefaultWordPressAdminPassword
 $wordPressAdminPasswordBase64 = Get-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $EnvFile
 $wordPressAdminEmail = Get-EnvValueOrDefault "WORDPRESS_ADMIN_EMAIL" $EnvFile $DefaultWordPressAdminEmail
 $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
+$previousWordPressObjectCache = Get-EnvValue "WORDPRESS_OBJECT_CACHE" $EnvFile
+
+if (@("none", "redis", "memcached") -notcontains $wordPressObjectCache) {
+    $wordPressObjectCache = $DefaultWordPressObjectCache
+}
 
 if (-not [string]::IsNullOrEmpty($wordPressAdminPasswordBase64)) {
     $wordPressAdminPassword = ""
@@ -551,6 +558,7 @@ if (-not [string]::IsNullOrEmpty($wordPressAdminPasswordBase64)) {
 
 $initialPhpVersion = $phpVersion
 $initialOptionalPlugin = $optionalPlugin
+$initialWordPressObjectCache = $wordPressObjectCache
 $initialWordPressAdminUser = $wordPressAdminUser
 $initialWordPressAdminPassword = $wordPressAdminPassword
 $initialWordPressAdminPasswordBase64 = $wordPressAdminPasswordBase64
@@ -561,7 +569,7 @@ $initialMailpitPort = $mailpitPort
 
 if (Test-Path $EnvFile) {
     $adminModeLabel = Get-AdminModeLabel
-    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, Mailpit port $mailpitPort, plugins: $optionalPlugin, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
+    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, Mailpit port $mailpitPort, plugins: $optionalPlugin, object cache: $wordPressObjectCache, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
     $keepOption = "Current settings"
 } else {
     $setupPrompt = "Choose setup mode:"
@@ -580,17 +588,46 @@ function Get-PhpVersionLabel {
     return "PHP $Version"
 }
 
+function Get-WordPressObjectCacheLabel {
+    param (
+        [string] $ObjectCache
+    )
+
+    switch ($ObjectCache) {
+        "redis" { return "Redis" }
+        "memcached" { return "Memcached" }
+        default { return "None" }
+    }
+}
+
+function Stop-UnselectedCache {
+    param (
+        [string] $ObjectCache
+    )
+
+    switch ($ObjectCache) {
+        "redis" { docker compose stop memcached }
+        "memcached" { docker compose stop redis }
+        default { docker compose stop redis memcached }
+    }
+}
+
 $phpMyAdminPrompt = "Choose phpMyAdmin port:"
 $step = 0
 $done = $false
 
 while (-not $done) {
     if ($step -eq 0) {
-        $setupMode = Read-MenuChoice $setupPrompt @($keepOption, "Custom settings")
+        $setupMode = Read-MenuChoice -Prompt $setupPrompt -Options @($keepOption, "Custom settings")
 
         if ($setupMode -ne "Custom settings") {
             $phpVersion = $initialPhpVersion
             $optionalPlugin = $initialOptionalPlugin
+            $wordPressObjectCache = if ($keepOption -eq "Default settings") {
+                $DefaultWordPressObjectCache
+            } else {
+                $initialWordPressObjectCache
+            }
             $wordPressAdminUser = $initialWordPressAdminUser
             $wordPressAdminPassword = $initialWordPressAdminPassword
             $wordPressAdminPasswordBase64 = $initialWordPressAdminPasswordBase64
@@ -603,7 +640,7 @@ while (-not $done) {
             $step = 1
         }
     } elseif ($step -eq 1) {
-        $phpChoice = Read-MenuChoice "Choose PHP version:" @(
+        $phpChoice = Read-MenuChoice -Prompt "Choose PHP version:" -Options @(
             "Standard (PHP $DefaultPhpVersion)",
             "PHP 8.1",
             "PHP 8.2",
@@ -636,13 +673,27 @@ while (-not $done) {
         $optionalPlugin = $pluginChoice
         $step = 3
     } elseif ($step -eq 3) {
-        $adminChoice = Read-MenuChoice "Choose WordPress administrator:" @(
+        $cacheChoice = Read-MenuChoice -Prompt "Choose WordPress object cache:" -Options @(
+            "None",
+            "Redis",
+            "Memcached"
+        ) -AllowBack -DefaultOption (Get-WordPressObjectCacheLabel $wordPressObjectCache)
+
+        if ($null -eq $cacheChoice) {
+            $step = 2
+            continue
+        }
+
+        $wordPressObjectCache = $cacheChoice.ToLowerInvariant()
+        $step = 4
+    } elseif ($step -eq 4) {
+        $adminChoice = Read-MenuChoice -Prompt "Choose WordPress administrator:" -Options @(
             "Default WordPress admin",
             "Custom WordPress admin"
         ) -AllowBack -DefaultOption (Get-AdminModeLabel)
 
         if ($null -eq $adminChoice) {
-            $step = 2
+            $step = 3
             continue
         }
 
@@ -664,23 +715,23 @@ while (-not $done) {
             $wordPressAdminEmail = $customAdmin.Email
         }
 
-        $step = 4
-    } elseif ($step -eq 4) {
+        $step = 5
+    } elseif ($step -eq 5) {
         $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
 
         if ($null -eq $portChoice) {
-            $step = 3
+            $step = 4
             continue
         }
 
         $wordPressPort = $portChoice
         $phpMyAdminPrompt = "Choose phpMyAdmin port:"
-        $step = 5
-    } elseif ($step -eq 5) {
+        $step = 6
+    } elseif ($step -eq 6) {
         $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort
 
         if ($null -eq $portChoice) {
-            $step = 4
+            $step = 5
             continue
         }
 
@@ -690,12 +741,12 @@ while (-not $done) {
         }
 
         $phpMyAdminPort = $portChoice
-        $step = 6
+        $step = 7
     } else {
         $portChoice = Read-PortChoice "Choose Mailpit port:" $DefaultMailpitPort
 
         if ($null -eq $portChoice) {
-            $step = 5
+            $step = 6
             continue
         }
 
@@ -713,33 +764,78 @@ $wordPressUrl = Get-LocalhostUrl $wordPressPort
 $phpMyAdminUrl = Get-LocalhostUrl $phpMyAdminPort
 $mailpitUrl = Get-LocalhostUrl $mailpitPort
 
-Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
-Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
-Set-EnvValue "WORDPRESS_ADMIN_USER" $wordPressAdminUser $EnvFile
-Set-EnvValue "WORDPRESS_ADMIN_PASSWORD" $wordPressAdminPassword $EnvFile
-Set-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $wordPressAdminPasswordBase64 $EnvFile
-Set-EnvValue "WORDPRESS_ADMIN_EMAIL" $wordPressAdminEmail $EnvFile
-Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
-Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
-Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile
-Set-EnvValue "MAILPIT_PORT" $mailpitPort $EnvFile
+$envBackup = New-TemporaryFile
+$envExisted = Test-Path $EnvFile
+$composeExitCode = 0
 
-if (-not [Console]::IsInputRedirected) {
-    Clear-Host
+if ($envExisted) {
+    Copy-Item -Path $EnvFile -Destination $envBackup -Force
 }
 
-Write-Host "Starting WordPress with PHP $phpVersion..."
-Write-Host "WordPress URL: $wordPressUrl"
-Write-Host "phpMyAdmin URL: $phpMyAdminUrl"
-Write-Host "Mailpit URL: $mailpitUrl"
+try {
+    Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
+    Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
+    Set-EnvValue "WORDPRESS_OBJECT_CACHE" $wordPressObjectCache $EnvFile
+    Set-EnvValue "COMPOSE_PROFILES" $wordPressObjectCache $EnvFile
+    Set-EnvValue "WORDPRESS_ADMIN_USER" $wordPressAdminUser $EnvFile
+    Set-EnvValue "WORDPRESS_ADMIN_PASSWORD" $wordPressAdminPassword $EnvFile
+    Set-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $wordPressAdminPasswordBase64 $EnvFile
+    Set-EnvValue "WORDPRESS_ADMIN_EMAIL" $wordPressAdminEmail $EnvFile
+    Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
+    Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
+    Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile
+    Set-EnvValue "MAILPIT_PORT" $mailpitPort $EnvFile
 
-if ($previousPhpVersion -ne $phpVersion) {
-    Write-Host "Rebuilding image because PHP version changed."
-    docker compose up -d --build
-} else {
-    docker compose up -d
+    if (-not [Console]::IsInputRedirected) {
+        Clear-Host
+    }
+
+    Write-Host "Starting WordPress with PHP $phpVersion..."
+    Write-Host "WordPress URL: $wordPressUrl"
+    Write-Host "phpMyAdmin URL: $phpMyAdminUrl"
+    Write-Host "Mailpit URL: $mailpitUrl"
+    Write-Host "WordPress object cache: $wordPressObjectCache"
+
+    if ($previousPhpVersion -ne $phpVersion) {
+        Write-Host "Rebuilding image because PHP version changed."
+        docker compose up -d --build --wait --wait-timeout 360
+    } else {
+        docker compose up -d --wait --wait-timeout 360
+    }
+
+    $composeExitCode = $LASTEXITCODE
+    if ($composeExitCode -ne 0) {
+        throw "The new configuration did not become healthy."
+    }
+} catch {
+    Write-Host "ERROR: $($_.Exception.Message) Restoring the previous .env." -ForegroundColor Red
+
+    if ($envExisted) {
+        Copy-Item -Path $envBackup -Destination $EnvFile -Force
+        docker compose up -d --wait --wait-timeout 360
+        if ($LASTEXITCODE -eq 0) {
+            $rollbackObjectCache = if ([string]::IsNullOrEmpty($previousWordPressObjectCache)) {
+                "none"
+            } else {
+                $previousWordPressObjectCache
+            }
+            Stop-UnselectedCache $rollbackObjectCache
+        } else {
+            Write-Host "ERROR: the previous configuration could not be restarted automatically." -ForegroundColor Red
+        }
+    } elseif (Test-Path $EnvFile) {
+        Remove-Item -Path $EnvFile -Force
+    }
+
+    if ($composeExitCode -eq 0) {
+        $composeExitCode = 1
+    }
+    exit $composeExitCode
+} finally {
+    Remove-Item -Path $envBackup -Force -ErrorAction SilentlyContinue
 }
 
+Stop-UnselectedCache $wordPressObjectCache
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($ManualRestore) {

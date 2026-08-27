@@ -6,11 +6,15 @@ DEFAULT_WORDPRESS_PORT="80"
 DEFAULT_PHPMYADMIN_PORT="8080"
 DEFAULT_MAILPIT_PORT="8025"
 DEFAULT_OPTIONAL_PLUGIN="none"
+DEFAULT_WORDPRESS_OBJECT_CACHE="none"
 DEFAULT_WORDPRESS_ADMIN_USER="admin_qmpgfd"
 DEFAULT_WORDPRESS_ADMIN_PASSWORD="R40U8zp17YlwvQNkDEKgnhx2!@#"
 DEFAULT_WORDPRESS_ADMIN_EMAIL="admin@example.com"
 ENV_FILE=".env"
 manual_restore=0
+env_backup=""
+env_existed=0
+env_rollback_pending=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -74,7 +78,23 @@ restore_tty_echo() {
     stty echo icanon 2>/dev/null < /dev/tty || true
 }
 
-trap restore_tty_echo EXIT
+cleanup_launcher() {
+    restore_tty_echo
+
+    if [ "$env_rollback_pending" -eq 1 ] && [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+        if [ "$env_existed" -eq 1 ]; then
+            cp "$env_backup" "$ENV_FILE"
+        else
+            rm -f -- "$ENV_FILE"
+        fi
+    fi
+
+    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+        rm -f -- "$env_backup"
+    fi
+}
+
+trap cleanup_launcher EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap '' TTOU
@@ -775,11 +795,18 @@ wordpress_port="$(env_value_or_default "WORDPRESS_PORT" "$DEFAULT_WORDPRESS_PORT
 phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_PORT")"
 mailpit_port="$(env_value_or_default "MAILPIT_PORT" "$DEFAULT_MAILPIT_PORT")"
 optional_plugin="$(env_value_or_default "WORDPRESS_OPTIONAL_PLUGIN" "$DEFAULT_OPTIONAL_PLUGIN")"
+wordpress_object_cache="$(env_value_or_default "WORDPRESS_OBJECT_CACHE" "$DEFAULT_WORDPRESS_OBJECT_CACHE")"
 wordpress_admin_user="$(env_value_or_default "WORDPRESS_ADMIN_USER" "$DEFAULT_WORDPRESS_ADMIN_USER")"
 wordpress_admin_password="$(env_value_or_default "WORDPRESS_ADMIN_PASSWORD" "$DEFAULT_WORDPRESS_ADMIN_PASSWORD")"
 wordpress_admin_password_base64="$(get_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" "$ENV_FILE")"
 wordpress_admin_email="$(env_value_or_default "WORDPRESS_ADMIN_EMAIL" "$DEFAULT_WORDPRESS_ADMIN_EMAIL")"
 previous_php_version="$(get_env_value "PHP_VERSION" "$ENV_FILE")"
+previous_wordpress_object_cache="$(get_env_value "WORDPRESS_OBJECT_CACHE" "$ENV_FILE")"
+
+case "$wordpress_object_cache" in
+    none|redis|memcached) ;;
+    *) wordpress_object_cache="$DEFAULT_WORDPRESS_OBJECT_CACHE" ;;
+esac
 
 if [ -n "$wordpress_admin_password_base64" ]; then
     wordpress_admin_password=""
@@ -788,6 +815,7 @@ fi
 
 initial_php_version="$php_version"
 initial_optional_plugin="$optional_plugin"
+initial_wordpress_object_cache="$wordpress_object_cache"
 initial_wordpress_admin_user="$wordpress_admin_user"
 initial_wordpress_admin_password="$wordpress_admin_password"
 initial_wordpress_admin_password_base64="$wordpress_admin_password_base64"
@@ -797,7 +825,7 @@ initial_phpmyadmin_port="$phpmyadmin_port"
 initial_mailpit_port="$mailpit_port"
 
 if [ -f "$ENV_FILE" ]; then
-    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$mailpit_port" "$optional_plugin" "$wordpress_admin_user" "$(admin_mode_label)" >&2
+    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, object cache: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$mailpit_port" "$optional_plugin" "$wordpress_object_cache" "$wordpress_admin_user" "$(admin_mode_label)" >&2
     keep_option="Current settings"
 else
     keep_option="Default settings"
@@ -809,6 +837,28 @@ php_version_label() {
     else
         echo "PHP $1"
     fi
+}
+
+object_cache_label() {
+    case "$1" in
+        redis) echo "Redis" ;;
+        memcached) echo "Memcached" ;;
+        *) echo "None" ;;
+    esac
+}
+
+stop_unselected_cache() {
+    case "$1" in
+        redis)
+            docker compose stop memcached
+            ;;
+        memcached)
+            docker compose stop redis
+            ;;
+        none|*)
+            docker compose stop redis memcached
+            ;;
+    esac
 }
 
 step=0
@@ -824,6 +874,11 @@ while true; do
             if [ "$setup_mode" != "Custom settings" ]; then
                 php_version="$initial_php_version"
                 optional_plugin="$initial_optional_plugin"
+                if [ "$keep_option" = "Default settings" ]; then
+                    wordpress_object_cache="$DEFAULT_WORDPRESS_OBJECT_CACHE"
+                else
+                    wordpress_object_cache="$initial_wordpress_object_cache"
+                fi
                 wordpress_admin_user="$initial_wordpress_admin_user"
                 wordpress_admin_password="$initial_wordpress_admin_password"
                 wordpress_admin_password_base64="$initial_wordpress_admin_password_base64"
@@ -881,9 +936,23 @@ while true; do
             ;;
         3)
             rc=0
-            admin_choice="$(choose_option --allow-back --default "$(admin_mode_label)" "Choose WordPress administrator:" "Default WordPress admin" "Custom WordPress admin")" || rc=$?
+            cache_choice="$(choose_option --allow-back --default "$(object_cache_label "$wordpress_object_cache")" "Choose WordPress object cache:" "None" "Redis" "Memcached")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=2
+                continue
+            fi
+            if [ "$rc" -ne 0 ]; then
+                exit 1
+            fi
+
+            wordpress_object_cache="$(printf '%s' "$cache_choice" | tr '[:upper:]' '[:lower:]')"
+            step=4
+            ;;
+        4)
+            rc=0
+            admin_choice="$(choose_option --allow-back --default "$(admin_mode_label)" "Choose WordPress administrator:" "Default WordPress admin" "Custom WordPress admin")" || rc=$?
+            if [ "$rc" -eq 2 ]; then
+                step=3
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -911,13 +980,13 @@ while true; do
                 wordpress_admin_email="$custom_admin_email"
             fi
 
-            step=4
+            step=5
             ;;
-        4)
+        5)
             rc=0
             port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=3
+                step=4
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -925,13 +994,13 @@ while true; do
             fi
 
             wordpress_port="$port_choice"
-            step=5
+            step=6
             ;;
-        5)
+        6)
             rc=0
             port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=4
+                step=5
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -944,13 +1013,13 @@ while true; do
             fi
 
             phpmyadmin_port="$port_choice"
-            step=6
+            step=7
             ;;
-        6)
+        7)
             rc=0
             port_choice="$(choose_port "Choose Mailpit port:" "$DEFAULT_MAILPIT_PORT")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=5
+                step=6
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -972,8 +1041,17 @@ wordpress_url="$(localhost_url "$wordpress_port")"
 phpmyadmin_url="$(localhost_url "$phpmyadmin_port")"
 mailpit_url="$(localhost_url "$mailpit_port")"
 
+env_backup="$(mktemp)"
+if [ -f "$ENV_FILE" ]; then
+    cp "$ENV_FILE" "$env_backup"
+    env_existed=1
+fi
+env_rollback_pending=1
+
 set_env_value "PHP_VERSION" "$php_version" "$ENV_FILE"
 set_env_value "WORDPRESS_OPTIONAL_PLUGIN" "$optional_plugin" "$ENV_FILE"
+set_env_value "WORDPRESS_OBJECT_CACHE" "$wordpress_object_cache" "$ENV_FILE"
+set_env_value "COMPOSE_PROFILES" "$wordpress_object_cache" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_USER" "$wordpress_admin_user" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_PASSWORD" "$wordpress_admin_password" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" "$wordpress_admin_password_base64" "$ENV_FILE"
@@ -987,13 +1065,37 @@ echo "Starting WordPress with PHP ${php_version}..."
 echo "WordPress URL: ${wordpress_url}"
 echo "phpMyAdmin URL: ${phpmyadmin_url}"
 echo "Mailpit URL: ${mailpit_url}"
+echo "WordPress object cache: ${wordpress_object_cache}"
 
+compose_status=0
 if [ "$previous_php_version" != "$php_version" ]; then
     echo "Rebuilding image because PHP version changed."
-    docker compose up -d --build
+    docker compose up -d --build --wait --wait-timeout 360 || compose_status=$?
 else
-    docker compose up -d
+    docker compose up -d --wait --wait-timeout 360 || compose_status=$?
 fi
+
+if [ "$compose_status" -ne 0 ]; then
+    echo "ERROR: the new configuration did not become healthy; restoring the previous .env." >&2
+    if [ "$env_existed" -eq 1 ]; then
+        cp "$env_backup" "$ENV_FILE"
+        if ! docker compose up -d --wait --wait-timeout 360; then
+            echo "ERROR: the previous configuration could not be restarted automatically." >&2
+        else
+            stop_unselected_cache "${previous_wordpress_object_cache:-none}" || true
+        fi
+    else
+        rm -f -- "$ENV_FILE"
+    fi
+    env_rollback_pending=0
+    exit "$compose_status"
+fi
+
+env_rollback_pending=0
+rm -f -- "$env_backup"
+env_backup=""
+
+stop_unselected_cache "$wordpress_object_cache"
 
 if [ "$manual_restore" -eq 1 ]; then
     echo "==> Restoring WordPress from manual backup files..."

@@ -12,6 +12,8 @@ Built for plugin/theme testing and site-migration workflows: break things freely
 | MariaDB | `mariadb:11.8` | — |
 | phpMyAdmin | `phpmyadmin:5.2.2` | http://localhost:8080 |
 | Mailpit | `axllent/mailpit:v1.30.0` | http://localhost:8025 |
+| Redis (optional) | `redis:8.10.0-alpine` | internal only |
+| Memcached (optional) | `memcached:1.6.45-alpine` | internal only |
 
 ## Requirements
 
@@ -44,17 +46,18 @@ In `Custom settings`, choose:
 
 - PHP image version: first `Standard (PHP 8.3)`, then PHP `8.1`, `8.2`, `8.4` and `8.5`.
 - Optional plugins: `All-in-One WP Migration`, `UpdraftPlus` and `Advanced Custom Fields` can be selected together, or leave `None`.
+- Persistent WordPress object cache: `None`, `Redis` or `Memcached`.
 - WordPress port: `Standard (80)` or a custom port.
 - phpMyAdmin port: `Standard (8080)` or a custom port.
 - Mailpit port: `Standard (8025)` or a custom port.
 
 The WordPress URL is generated automatically from the selected WordPress port.
 
-If you do not need the interactive setup, `docker compose up -d` still uses standard PHP `8.3`, WordPress port `80`, phpMyAdmin port `8080` and Mailpit port `8025`.
+If you do not need the interactive setup, `docker compose up -d` still uses standard PHP `8.3`, no persistent object cache, WordPress port `80`, phpMyAdmin port `8080` and Mailpit port `8025`.
 
 The first start takes about a minute and is fully automated:
 
-1. Builds the image (official WordPress image + wp-cli) and pulls MariaDB / phpMyAdmin / Mailpit.
+1. Builds the image (official WordPress image + wp-cli + PHP Redis/Memcache extensions) and pulls MariaDB / phpMyAdmin / Mailpit plus the selected cache service.
 2. Downloads and installs the **latest** WordPress core — no install wizard. Core auto-updates are disabled, so the version stays frozen in state-0.
 3. Installs the default theme and the configured plugins (see [Plugins](#plugins)).
 4. Removes WordPress's default Akismet and Hello Dolly plugins.
@@ -71,7 +74,7 @@ Once it's done:
 
 > These are the default **local development credentials**. Choose `Custom settings` in `./start.sh` or `./start.ps1` to configure a different administrator.
 
-Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, optional plugins and administrator).
+Every subsequent `docker compose up -d` starts instantly and re-applies the `.env` settings (site URL, object cache, optional plugins and administrator).
 
 ## Commands
 
@@ -159,6 +162,16 @@ Choose `Custom settings`, then pick custom WordPress, phpMyAdmin and Mailpit por
 
 Messages sent through WordPress `wp_mail()` are captured by Mailpit automatically. Open http://localhost:8025 to inspect their HTML, text, headers, links and attachments.
 
+## Persistent object cache
+
+`./start.sh` and `./start.ps1` provide one exclusive object-cache choice:
+
+- **Redis** starts an internal Redis server, activates the Redis Object Cache plugin and its `object-cache.php` drop-in, and connects through the native PHP `redis` extension.
+- **Memcached** starts an internal Memcached server and installs Automattic's `object-cache.php` drop-in, connected through the native PHP `memcache` extension.
+- **None** stops both cache services and removes only the Redis/Memcached drop-in managed by this selector.
+- 
+Run either launcher again to switch backend. It starts and verifies the new configuration before stopping the old service.
+
 ## Plugins
 
 On a fresh install `scripts/init.sh` installs and activates:
@@ -178,23 +191,27 @@ WordPress's default plugins (Akismet, Hello Dolly) are removed automatically on 
 
 | Script | Runs when | What it does |
 |---|---|---|
-| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom PHP, plugins, administrator and ports, writes them into `.env`, starts Compose and rebuilds only when PHP changes |
+| `start.sh` / `start.ps1` | manual start / reconfigure | asks for current/custom PHP, object cache, plugins, administrator and ports, starts and verifies Compose, then stops the unselected cache service |
 | `scripts/entrypoint.sh` | container start | starts `init.sh` in the background, hands control to the official WP entrypoint |
-| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + optional plugins from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
-| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then syncs local plugin ZIPs |
-| `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, copies `wp-config.php` into `snapshots/` |
+| `scripts/init.sh` | container start (background) | WP already installed → sync site URL + object cache + optional plugins from `.env` + local plugin ZIPs. Snapshot exists → restore it. Otherwise → fresh install + plugins + save state-0 |
+| `scripts/reset.sh` | `./reset.sh` / `./reset.ps1` | resets the DB, restores `wp-content` + `wp-config.php` + the core version from the snapshot, then reapplies object cache and local plugin ZIPs |
+| `scripts/snapshot.sh` | `./snapshot.sh` / `./snapshot.ps1` | exports the DB, archives `wp-content`, and saves `wp-config.php` plus cache drop-in ownership into `snapshots/` |
 | `scripts/apply-optional-plugin.sh` | called by init/reset | installs and activates selected optional plugins and removes only plugins deselected after an earlier selection |
+| `scripts/apply-object-cache.sh` | called by init/reset/restore | configures, flushes after restores and verifies the selected Redis/Memcached backend or disables the managed cache |
+| `scripts/flush-object-cache.sh` | called before reset/restore | invalidates persistent cache before the database or content is replaced |
+| `scripts/restore-object-cache-ownership.sh` | called during reset/restore | restores trusted drop-in provenance from state-0 or clears stale provenance |
 | `scripts/install-local-plugins.sh` | called by init/reset | installs and activates every ZIP from `plugins/` |
 | `scripts/remove-default-plugins.sh` | called by init/snapshot | deletes Akismet & Hello Dolly if present |
 | `scripts/default-admin-guardian.php` | after every local WordPress request | restores the default administrator after a database import; it lives outside WordPress and is not included in site exports |
 
-A state-0 snapshot is four files in `snapshots/` (generated locally, gitignored):
+A state-0 snapshot is five files in `snapshots/` (generated locally, gitignored):
 
 ```
 state-0.sql                  # full database dump
 state-0-wp-content.tar.gz    # wp-content (plugins, themes, uploads)
 state-0-wp-config.php        # wp-config.php
 state-0-core-version         # WordPress core version at snapshot time
+state-0-object-cache-dropin  # managed drop-in mode and SHA-256, or none
 ```
 
 WordPress core and the database live in named Docker volumes (`wp_data`, `db_data`). `wp-content/` is bind-mounted from the repo directory, so you can edit themes and plugins directly from your IDE on the host.
@@ -202,9 +219,13 @@ WordPress core and the database live in named Docker volumes (`wp_data`, `db_dat
 ## Project structure
 
 ```
-docker-compose.yml          # services: db, wordpress, phpmyadmin, mailpit
-Dockerfile                  # wordpress:php${PHP_VERSION}-apache + wp-cli + MariaDB client
+docker-compose.yml          # services: db, wordpress, phpmyadmin, mailpit, redis, memcached
+Dockerfile                  # WordPress + wp-cli + MariaDB client + PHP cache extensions
 scripts/
+  apply-object-cache.sh     # configure and verify Redis/Memcached
+  flush-object-cache.sh     # invalidate cache around restores
+  prepare-object-cache.sh   # safely remove a previously managed drop-in
+  restore-object-cache-ownership.sh # reconcile snapshot drop-in ownership
   entrypoint.sh             # custom container entrypoint
   init.sh                   # first install / restore from state-0
   reset.sh                  # restore state-0

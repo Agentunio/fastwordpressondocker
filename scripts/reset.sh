@@ -32,6 +32,8 @@ fi
 cd /var/www/html
 WORDPRESS_URL="${WORDPRESS_URL:-http://localhost}"
 
+bash /scripts/flush-object-cache.sh
+
 if [ -f /snapshots/state-0-core-version ]; then
     SNAPSHOT_CORE_VERSION="$(cat /snapshots/state-0-core-version)"
     CURRENT_CORE_VERSION="$(wp --allow-root core version 2>/dev/null || echo "unknown")"
@@ -48,15 +50,16 @@ wp --allow-root db import /snapshots/state-0.sql
 echo "Restoring wp-config.php..."
 cp /snapshots/state-0-wp-config.php /var/www/html/wp-config.php
 
-wp --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
-wp --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
-
 echo "Wiping wp-content..."
 find /var/www/html/wp-content -mindepth 1 -delete
 
 echo "Restoring wp-content from snapshot..."
 tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
 
+bash /scripts/restore-object-cache-ownership.sh --from-state-zero
+bash /scripts/apply-object-cache.sh --flush
+wp --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
+wp --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
 bash /scripts/apply-optional-plugin.sh
 bash /scripts/install-local-plugins.sh
 

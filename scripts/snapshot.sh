@@ -108,11 +108,41 @@ done
 gzip --test "$SNAPSHOT_STAGING_DIR/state-0-wp-content.tar.gz"
 tar --list --gzip --file="$SNAPSHOT_STAGING_DIR/state-0-wp-content.tar.gz" > /dev/null
 
+if [ -L /snapshots/.fast-wordpress-object-cache-dropin ]; then
+    echo "[snapshot] ERROR: object cache ownership file cannot be a symbolic link." >&2
+    exit 1
+elif [ -e /snapshots/.fast-wordpress-object-cache-dropin ] \
+    && [ ! -f /snapshots/.fast-wordpress-object-cache-dropin ]; then
+    echo "[snapshot] ERROR: object cache ownership path is not a regular file." >&2
+    exit 1
+elif [ -f /snapshots/.fast-wordpress-object-cache-dropin ] \
+    && [ ! -L /var/www/html/wp-content/object-cache.php ] \
+    && [ -f /var/www/html/wp-content/object-cache.php ]; then
+    cache_mode=""
+    cache_hash=""
+    cache_extra=""
+    read -r cache_mode cache_hash cache_extra < /snapshots/.fast-wordpress-object-cache-dropin || true
+    current_cache_hash="$(sha256sum /var/www/html/wp-content/object-cache.php | awk '{print $1}')"
+
+    if { [ "$cache_mode" = "redis" ] || [ "$cache_mode" = "memcached" ]; } \
+        && [[ "$cache_hash" =~ ^[0-9a-f]{64}$ ]] \
+        && [ -z "${cache_extra:-}" ] \
+        && [ "$cache_hash" = "$current_cache_hash" ]; then
+        cp /snapshots/.fast-wordpress-object-cache-dropin \
+            "$SNAPSHOT_STAGING_DIR/state-0-object-cache-dropin"
+    else
+        echo "none" > "$SNAPSHOT_STAGING_DIR/state-0-object-cache-dropin"
+    fi
+else
+    echo "none" > "$SNAPSHOT_STAGING_DIR/state-0-object-cache-dropin"
+fi
+
 start_step "Finalizing the snapshot..."
 cp /var/www/html/wp-config.php "$SNAPSHOT_STAGING_DIR/state-0-wp-config.php"
 
 for snapshot_file in \
     state-0-core-version \
+    state-0-object-cache-dropin \
     state-0.sql \
     state-0-wp-content.tar.gz \
     state-0-wp-config.php; do

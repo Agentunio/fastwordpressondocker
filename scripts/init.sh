@@ -58,6 +58,7 @@ finalize_wordpress_permissions() {
 
 remove_untrusted_wp_cli_config
 harden_wordpress_root
+bash /scripts/prepare-object-cache.sh
 
 trap finalize_wordpress_permissions EXIT
 
@@ -128,6 +129,7 @@ if [ "$INSTALLED_RC" -eq 0 ]; then
         echo "[init] Active theme files missing - activating twentytwentyfive..."
         wp --allow-root theme activate twentytwentyfive --skip-plugins --skip-themes
     fi
+    bash /scripts/apply-object-cache.sh
     bash /scripts/apply-optional-plugin.sh
     bash /scripts/install-local-plugins.sh
     if [ "$CORE_CONTENT_REPAIRED" -eq 1 ]; then
@@ -169,6 +171,7 @@ wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
 echo "[init] Activating default theme..."
 wp --allow-root theme activate twentytwentyfive --skip-plugins --skip-themes
 
+bash /scripts/apply-object-cache.sh
 bash /scripts/apply-optional-plugin.sh
 
 bash /scripts/install-local-plugins.sh

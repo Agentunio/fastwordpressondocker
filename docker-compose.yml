@@ -30,6 +30,7 @@ services:
       WORDPRESS_DB_PASSWORD: wp
       WORDPRESS_URL: ${WORDPRESS_URL:-http://localhost}
       WORDPRESS_OPTIONAL_PLUGIN: ${WORDPRESS_OPTIONAL_PLUGIN:-none}
+      WORDPRESS_OBJECT_CACHE: ${WORDPRESS_OBJECT_CACHE:-none}
       WORDPRESS_ADMIN_USER: ${WORDPRESS_ADMIN_USER:-admin_qmpgfd}
       WORDPRESS_ADMIN_PASSWORD: ${WORDPRESS_ADMIN_PASSWORD:-R40U8zp17YlwvQNkDEKgnhx2!@#}
       WORDPRESS_ADMIN_PASSWORD_BASE64: ${WORDPRESS_ADMIN_PASSWORD_BASE64:-}
@@ -44,6 +45,9 @@ services:
       - ./plugins:/plugins:ro
       - ./manual:/manual:ro
       - ./snapshots:/snapshots
+    networks:
+      - default
+      - cache
     healthcheck:
       test: ["CMD", "grep", "-qx", "ready", "/tmp/fast-wordpress-init.status"]
       interval: 5s
@@ -52,6 +56,42 @@ services:
       start_period: 300s
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]
+
+  redis:
+    image: redis:8.10.0-alpine
+    profiles: ["redis"]
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - cache
+
+  memcached:
+    image: memcached:1.6.45-alpine
+    profiles: ["memcached"]
+    command:
+      - --memory-limit=128
+      - --conn-limit=1024
+      - --threads=4
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'version\\r\\n' | nc -w 1 127.0.0.1 11211 | grep -q '^VERSION'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - cache
 
   mailpit:
     image: axllent/mailpit:v1.30.0
@@ -74,3 +114,7 @@ services:
 volumes:
   db_data:
   wp_data:
+
+networks:
+  cache:
+    internal: true

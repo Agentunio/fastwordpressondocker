@@ -298,14 +298,18 @@ if [ -n "$ZIP_FILE" ] || [ -n "$CONTENT_FOLDER" ]; then
     prepare_content
 fi
 
+bash /scripts/flush-object-cache.sh
+
 if [ -n "$SQL_FILE" ]; then
     restore_database
 fi
 
 if [ -n "$ZIP_FILE" ] || [ -n "$CONTENT_FOLDER" ]; then
     restore_content
+    bash /scripts/restore-object-cache-ownership.sh --clear
 fi
 
+bash /scripts/apply-object-cache.sh --flush
 bash /scripts/apply-optional-plugin.sh --preserve-unselected
 bash /scripts/install-local-plugins.sh
 
