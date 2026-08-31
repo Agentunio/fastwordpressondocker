@@ -1068,7 +1068,9 @@ echo "Mailpit URL: ${mailpit_url}"
 echo "WordPress object cache: ${wordpress_object_cache}"
 
 compose_status=0
-if [ "$previous_php_version" != "$php_version" ]; then
+if [ -z "$previous_php_version" ]; then
+    docker compose up -d --build --wait --wait-timeout 360 || compose_status=$?
+elif [ "$previous_php_version" != "$php_version" ]; then
     echo "Rebuilding image because PHP version changed."
     docker compose up -d --build --wait --wait-timeout 360 || compose_status=$?
 else

@@ -796,7 +796,9 @@ try {
     Write-Host "Mailpit URL: $mailpitUrl"
     Write-Host "WordPress object cache: $wordPressObjectCache"
 
-    if ($previousPhpVersion -ne $phpVersion) {
+    if ([string]::IsNullOrEmpty($previousPhpVersion)) {
+        docker compose up -d --build --wait --wait-timeout 360
+    } elseif ($previousPhpVersion -ne $phpVersion) {
         Write-Host "Rebuilding image because PHP version changed."
         docker compose up -d --build --wait --wait-timeout 360
     } else {
