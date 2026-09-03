@@ -44,7 +44,11 @@ set_env_value() {
     if grep -q "^${key}=" "$file"; then
         local tmp_file
         tmp_file="$(mktemp)"
-        awk -v key="$key" -v value="$value" '
+        FWD_ENV_KEY="$key" FWD_ENV_VALUE="$value" awk '
+            BEGIN {
+                key = ENVIRON["FWD_ENV_KEY"]
+                value = ENVIRON["FWD_ENV_VALUE"]
+            }
             index($0, key "=") == 1 { print key "=" value; next }
             { print }
         ' "$file" > "$tmp_file"
@@ -72,6 +76,143 @@ env_value_or_default() {
     local value
     value="$(get_env_value "$1" "$ENV_FILE")"
     echo "${value:-$2}"
+}
+
+safe_display_value() {
+    local destination="$1"
+    local value="$2"
+    local safe_value
+    local LC_ALL=C
+
+    safe_value="${value//[![:print:]]/?}"
+    printf -v "$destination" '%s' "$safe_value"
+}
+
+invalid_env_value() {
+    printf 'ERROR: invalid %s in %s.\n' "$1" "$ENV_FILE" >&2
+    return 1
+}
+
+invalid_env_file() {
+    printf 'ERROR: invalid or unsafe structure in %s.\n' "$ENV_FILE" >&2
+    return 1
+}
+
+is_safe_env_value() {
+    local value="$1"
+    local LC_ALL=C
+
+    [ "$value" = "${value//[![:print:]]/}" ]
+}
+
+is_valid_port() {
+    local port="$1"
+
+    [[ "$port" =~ ^[0-9]+$ ]] \
+        && [ "${#port}" -le 5 ] \
+        && [ "$port" -ge 1 ] \
+        && [ "$port" -le 65535 ]
+}
+
+is_valid_optional_plugins() {
+    local value="$1"
+    local plugin
+    local plugins
+
+    if [ "$value" = "none" ]; then
+        return 0
+    fi
+
+    if [ -z "$value" ] || [[ "$value" == ,* ]] || [[ "$value" == *, ]] || [[ "$value" == *,,* ]]; then
+        return 1
+    fi
+
+    IFS=',' read -ra plugins <<< "$value"
+    for plugin in "${plugins[@]}"; do
+        case "$plugin" in
+            all-in-one-wp-migration|updraftplus|advanced-custom-fields) ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+validate_env_file_structure() {
+    local line
+    local key
+    local seen_keys="|"
+
+    [ ! -L "$ENV_FILE" ] || invalid_env_file || return 1
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        is_safe_env_value "$line" || invalid_env_file || return 1
+
+        case "$line" in
+            ""|\#*) continue ;;
+            *=*) key="${line%%=*}" ;;
+            *) invalid_env_file || return 1 ;;
+        esac
+
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || invalid_env_file || return 1
+
+        case "$key" in
+            COMPOSE_PROFILES) ;;
+            COMPOSE_*) invalid_env_file || return 1 ;;
+        esac
+
+        case "$seen_keys" in
+            *"|${key}|"*) invalid_env_file || return 1 ;;
+        esac
+        seen_keys="${seen_keys}${key}|"
+    done < "$ENV_FILE"
+}
+
+validate_current_settings() {
+    local key
+    local value
+
+    while IFS='|' read -r key value; do
+        is_safe_env_value "$value" || invalid_env_value "$key" || return 1
+    done <<EOF
+PHP_VERSION|${php_version}
+WORDPRESS_PORT|${wordpress_port}
+PHPMYADMIN_PORT|${phpmyadmin_port}
+MAILPIT_PORT|${mailpit_port}
+WORDPRESS_OPTIONAL_PLUGIN|${optional_plugin}
+WORDPRESS_OBJECT_CACHE|${wordpress_object_cache}
+WORDPRESS_ADMIN_USER|${wordpress_admin_user}
+WORDPRESS_ADMIN_PASSWORD|${wordpress_admin_password}
+WORDPRESS_ADMIN_PASSWORD_BASE64|${wordpress_admin_password_base64}
+WORDPRESS_ADMIN_EMAIL|${wordpress_admin_email}
+EOF
+
+    case "$php_version" in
+        8.1|8.2|8.3|8.4|8.5) ;;
+        *) invalid_env_value "PHP_VERSION" || return 1 ;;
+    esac
+
+    is_valid_port "$wordpress_port" || invalid_env_value "WORDPRESS_PORT" || return 1
+    is_valid_port "$phpmyadmin_port" || invalid_env_value "PHPMYADMIN_PORT" || return 1
+    is_valid_port "$mailpit_port" || invalid_env_value "MAILPIT_PORT" || return 1
+    is_valid_optional_plugins "$optional_plugin" || invalid_env_value "WORDPRESS_OPTIONAL_PLUGIN" || return 1
+
+    case "$wordpress_object_cache" in
+        none|redis|memcached) ;;
+        *) invalid_env_value "WORDPRESS_OBJECT_CACHE" || return 1 ;;
+    esac
+
+    [[ "$wordpress_admin_user" =~ ^[A-Za-z0-9._@-]{1,60}$ ]] \
+        || invalid_env_value "WORDPRESS_ADMIN_USER" \
+        || return 1
+    [[ "$wordpress_admin_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] \
+        || invalid_env_value "WORDPRESS_ADMIN_EMAIL" \
+        || return 1
+
+    if [ -n "$wordpress_admin_password_base64" ]; then
+        [[ "$wordpress_admin_password_base64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] \
+            && [ "$(( ${#wordpress_admin_password_base64} % 4 ))" -eq 0 ] \
+            || invalid_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" \
+            || return 1
+    fi
 }
 
 restore_tty_echo() {
@@ -650,15 +791,29 @@ read_port() {
 choose_port() {
     local prompt="$1"
     local default_port="$2"
+    local current_port="${3:-}"
     local port_choice
     local port
     local rc
+    local current_option=""
+    local current_port_display=""
 
     while true; do
         rc=0
-        port_choice="$(choose_option --allow-back "$prompt" "Standard (${default_port})" "Custom")" || rc=$?
+        if [ -n "$current_port" ]; then
+            safe_display_value current_port_display "$current_port"
+            current_option="Current settings (${current_port_display})"
+            port_choice="$(choose_option --allow-back "$prompt" "$current_option" "Custom")" || rc=$?
+        else
+            port_choice="$(choose_option --allow-back "$prompt" "Standard (${default_port})" "Custom")" || rc=$?
+        fi
         if [ "$rc" -ne 0 ]; then
             return "$rc"
+        fi
+
+        if [ -n "$current_option" ] && [ "$port_choice" = "$current_option" ]; then
+            echo "$current_port"
+            return 0
         fi
 
         if [ "$port_choice" = "Standard (${default_port})" ]; then
@@ -790,6 +945,11 @@ localhost_url() {
     fi
 }
 
+if [ -L "$ENV_FILE" ] || { [ -e "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; }; then
+    invalid_env_file
+    exit 1
+fi
+
 php_version="$(env_value_or_default "PHP_VERSION" "$DEFAULT_PHP_VERSION")"
 wordpress_port="$(env_value_or_default "WORDPRESS_PORT" "$DEFAULT_WORDPRESS_PORT")"
 phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_PORT")"
@@ -802,6 +962,11 @@ wordpress_admin_password_base64="$(get_env_value "WORDPRESS_ADMIN_PASSWORD_BASE6
 wordpress_admin_email="$(env_value_or_default "WORDPRESS_ADMIN_EMAIL" "$DEFAULT_WORDPRESS_ADMIN_EMAIL")"
 previous_php_version="$(get_env_value "PHP_VERSION" "$ENV_FILE")"
 previous_wordpress_object_cache="$(get_env_value "WORDPRESS_OBJECT_CACHE" "$ENV_FILE")"
+
+if [ -f "$ENV_FILE" ]; then
+    validate_env_file_structure || exit 1
+    validate_current_settings || exit 1
+fi
 
 case "$wordpress_object_cache" in
     none|redis|memcached) ;;
@@ -823,9 +988,24 @@ initial_wordpress_admin_email="$wordpress_admin_email"
 initial_wordpress_port="$wordpress_port"
 initial_phpmyadmin_port="$phpmyadmin_port"
 initial_mailpit_port="$mailpit_port"
+initial_wordpress_admin_mode="$(admin_mode_label)"
+initial_php_version_display=""
+initial_optional_plugin_display=""
+initial_wordpress_admin_user_display=""
+initial_wordpress_port_display=""
+initial_phpmyadmin_port_display=""
+initial_mailpit_port_display=""
+safe_display_value initial_php_version_display "$initial_php_version"
+safe_display_value initial_optional_plugin_display "$initial_optional_plugin"
+safe_display_value initial_wordpress_admin_user_display "$initial_wordpress_admin_user"
+safe_display_value initial_wordpress_port_display "$initial_wordpress_port"
+safe_display_value initial_phpmyadmin_port_display "$initial_phpmyadmin_port"
+safe_display_value initial_mailpit_port_display "$initial_mailpit_port"
+has_current_settings=0
 
 if [ -f "$ENV_FILE" ]; then
-    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, object cache: %s, admin: %s (%s)\n\n" "$php_version" "$wordpress_port" "$phpmyadmin_port" "$mailpit_port" "$optional_plugin" "$wordpress_object_cache" "$wordpress_admin_user" "$(admin_mode_label)" >&2
+    has_current_settings=1
+    printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, object cache: %s, admin: %s (%s)\n\n" "$initial_php_version_display" "$initial_wordpress_port_display" "$initial_phpmyadmin_port_display" "$initial_mailpit_port_display" "$initial_optional_plugin_display" "$wordpress_object_cache" "$initial_wordpress_admin_user_display" "$initial_wordpress_admin_mode" >&2
     keep_option="Current settings"
 else
     keep_option="Default settings"
@@ -892,7 +1072,16 @@ while true; do
             ;;
         1)
             rc=0
-            php_choice="$(choose_option --allow-back --default "$(php_version_label "$php_version")" "Choose PHP version:" "Standard (PHP ${DEFAULT_PHP_VERSION})" "PHP 8.1" "PHP 8.2" "PHP 8.4" "PHP 8.5")" || rc=$?
+            php_options=("Standard (PHP ${DEFAULT_PHP_VERSION})" "PHP 8.1" "PHP 8.2" "PHP 8.4" "PHP 8.5")
+            php_default_option="$(php_version_label "$php_version")"
+            current_php_option=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_php_option="Current settings (PHP ${initial_php_version_display})"
+                php_options=("$current_php_option" "${php_options[@]}")
+                php_default_option="$current_php_option"
+            fi
+
+            php_choice="$(choose_option --allow-back --default "$php_default_option" "Choose PHP version:" "${php_options[@]}")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=0
                 continue
@@ -902,6 +1091,9 @@ while true; do
             fi
 
             case "$php_choice" in
+                "$current_php_option")
+                    php_version="$initial_php_version"
+                    ;;
                 "Standard (PHP ${DEFAULT_PHP_VERSION})")
                     php_version="$DEFAULT_PHP_VERSION"
                     ;;
@@ -922,9 +1114,29 @@ while true; do
             ;;
         2)
             rc=0
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_plugin_option="Current settings (${initial_optional_plugin_display})"
+                plugin_setup_choice="$(choose_option --allow-back "Choose optional plugins:" "$current_plugin_option" "Custom")" || rc=$?
+                if [ "$rc" -eq 2 ]; then
+                    step=1
+                    continue
+                fi
+                if [ "$rc" -ne 0 ]; then
+                    exit 1
+                fi
+                if [ "$plugin_setup_choice" = "$current_plugin_option" ]; then
+                    optional_plugin="$initial_optional_plugin"
+                    step=3
+                    continue
+                fi
+            fi
+
+            rc=0
             plugin_choice="$(choose_optional_plugins "$optional_plugin")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=1
+                if [ "$has_current_settings" -eq 0 ]; then
+                    step=1
+                fi
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -936,7 +1148,16 @@ while true; do
             ;;
         3)
             rc=0
-            cache_choice="$(choose_option --allow-back --default "$(object_cache_label "$wordpress_object_cache")" "Choose WordPress object cache:" "None" "Redis" "Memcached")" || rc=$?
+            cache_options=("None" "Redis" "Memcached")
+            cache_default_option="$(object_cache_label "$wordpress_object_cache")"
+            current_cache_option=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_cache_option="Current settings ($(object_cache_label "$initial_wordpress_object_cache"))"
+                cache_options=("$current_cache_option" "${cache_options[@]}")
+                cache_default_option="$current_cache_option"
+            fi
+
+            cache_choice="$(choose_option --allow-back --default "$cache_default_option" "Choose WordPress object cache:" "${cache_options[@]}")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=2
                 continue
@@ -945,12 +1166,25 @@ while true; do
                 exit 1
             fi
 
-            wordpress_object_cache="$(printf '%s' "$cache_choice" | tr '[:upper:]' '[:lower:]')"
+            if [ -n "$current_cache_option" ] && [ "$cache_choice" = "$current_cache_option" ]; then
+                wordpress_object_cache="$initial_wordpress_object_cache"
+            else
+                wordpress_object_cache="$(printf '%s' "$cache_choice" | tr '[:upper:]' '[:lower:]')"
+            fi
             step=4
             ;;
         4)
             rc=0
-            admin_choice="$(choose_option --allow-back --default "$(admin_mode_label)" "Choose WordPress administrator:" "Default WordPress admin" "Custom WordPress admin")" || rc=$?
+            admin_options=("Default WordPress admin" "Custom WordPress admin")
+            admin_default_option="$(admin_mode_label)"
+            current_admin_option=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_admin_option="Current settings (${initial_wordpress_admin_user_display}, ${initial_wordpress_admin_mode})"
+                admin_options=("$current_admin_option" "${admin_options[@]}")
+                admin_default_option="$current_admin_option"
+            fi
+
+            admin_choice="$(choose_option --allow-back --default "$admin_default_option" "Choose WordPress administrator:" "${admin_options[@]}")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=3
                 continue
@@ -959,7 +1193,12 @@ while true; do
                 exit 1
             fi
 
-            if [ "$admin_choice" = "Default WordPress admin" ]; then
+            if [ -n "$current_admin_option" ] && [ "$admin_choice" = "$current_admin_option" ]; then
+                wordpress_admin_user="$initial_wordpress_admin_user"
+                wordpress_admin_password="$initial_wordpress_admin_password"
+                wordpress_admin_password_base64="$initial_wordpress_admin_password_base64"
+                wordpress_admin_email="$initial_wordpress_admin_email"
+            elif [ "$admin_choice" = "Default WordPress admin" ]; then
                 wordpress_admin_user="$DEFAULT_WORDPRESS_ADMIN_USER"
                 wordpress_admin_password="$DEFAULT_WORDPRESS_ADMIN_PASSWORD"
                 wordpress_admin_password_base64=""
@@ -984,7 +1223,11 @@ while true; do
             ;;
         5)
             rc=0
-            port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT")" || rc=$?
+            current_port=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_port="$initial_wordpress_port"
+            fi
+            port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT" "$current_port")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=4
                 continue
@@ -998,7 +1241,11 @@ while true; do
             ;;
         6)
             rc=0
-            port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT")" || rc=$?
+            current_port=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_port="$initial_phpmyadmin_port"
+            fi
+            port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT" "$current_port")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=5
                 continue
@@ -1008,7 +1255,9 @@ while true; do
             fi
 
             if [ "$port_choice" = "$wordpress_port" ]; then
-                echo "phpMyAdmin port must be different from WordPress port (${wordpress_port})." >&2
+                wordpress_port_display=""
+                safe_display_value wordpress_port_display "$wordpress_port"
+                echo "phpMyAdmin port must be different from WordPress port (${wordpress_port_display})." >&2
                 continue
             fi
 
@@ -1017,7 +1266,11 @@ while true; do
             ;;
         7)
             rc=0
-            port_choice="$(choose_port "Choose Mailpit port:" "$DEFAULT_MAILPIT_PORT")" || rc=$?
+            current_port=""
+            if [ "$has_current_settings" -eq 1 ]; then
+                current_port="$initial_mailpit_port"
+            fi
+            port_choice="$(choose_port "Choose Mailpit port:" "$DEFAULT_MAILPIT_PORT" "$current_port")" || rc=$?
             if [ "$rc" -eq 2 ]; then
                 step=6
                 continue
@@ -1048,6 +1301,11 @@ if [ -f "$ENV_FILE" ]; then
 fi
 env_rollback_pending=1
 
+if [ ! -e "$ENV_FILE" ]; then
+    (umask 077; touch "$ENV_FILE")
+fi
+chmod 600 "$ENV_FILE"
+
 set_env_value "PHP_VERSION" "$php_version" "$ENV_FILE"
 set_env_value "WORDPRESS_OPTIONAL_PLUGIN" "$optional_plugin" "$ENV_FILE"
 set_env_value "WORDPRESS_OBJECT_CACHE" "$wordpress_object_cache" "$ENV_FILE"
@@ -1061,10 +1319,18 @@ set_env_value "WORDPRESS_URL" "$wordpress_url" "$ENV_FILE"
 set_env_value "PHPMYADMIN_PORT" "$phpmyadmin_port" "$ENV_FILE"
 set_env_value "MAILPIT_PORT" "$mailpit_port" "$ENV_FILE"
 
-echo "Starting WordPress with PHP ${php_version}..."
-echo "WordPress URL: ${wordpress_url}"
-echo "phpMyAdmin URL: ${phpmyadmin_url}"
-echo "Mailpit URL: ${mailpit_url}"
+php_version_display=""
+wordpress_url_display=""
+phpmyadmin_url_display=""
+mailpit_url_display=""
+safe_display_value php_version_display "$php_version"
+safe_display_value wordpress_url_display "$wordpress_url"
+safe_display_value phpmyadmin_url_display "$phpmyadmin_url"
+safe_display_value mailpit_url_display "$mailpit_url"
+echo "Starting WordPress with PHP ${php_version_display}..."
+echo "WordPress URL: ${wordpress_url_display}"
+echo "phpMyAdmin URL: ${phpmyadmin_url_display}"
+echo "Mailpit URL: ${mailpit_url_display}"
 echo "WordPress object cache: ${wordpress_object_cache}"
 
 compose_status=0

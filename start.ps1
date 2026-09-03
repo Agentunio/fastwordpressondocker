@@ -23,8 +23,8 @@ function Set-EnvValue {
     )
 
     $lines = @()
-    if (Test-Path $File) {
-        $lines = Get-Content $File
+    if (Test-Path -LiteralPath $File) {
+        $lines = Get-Content -LiteralPath $File
     }
 
     $found = $false
@@ -43,7 +43,7 @@ function Set-EnvValue {
         $updatedLines = @($updatedLines) + "$Key=$Value"
     }
 
-    Set-Content -Path $File -Value $updatedLines
+    Set-Content -LiteralPath $File -Value $updatedLines
 }
 
 function Get-EnvValue {
@@ -52,11 +52,11 @@ function Get-EnvValue {
         [string] $File
     )
 
-    if (-not (Test-Path $File)) {
+    if (-not (Test-Path -LiteralPath $File)) {
         return $null
     }
 
-    foreach ($line in Get-Content $File) {
+    foreach ($line in Get-Content -LiteralPath $File) {
         if ($line -match "^$([regex]::Escape($Key))=") {
             return $line.Substring($Key.Length + 1)
         }
@@ -79,6 +79,152 @@ function Get-EnvValueOrDefault {
     }
 
     return $value
+}
+
+function ConvertTo-SafeDisplayValue {
+    param (
+        [AllowEmptyString()]
+        [string] $Value
+    )
+
+    return [regex]::Replace($Value, '[\p{Cc}\p{Cf}]', '?')
+}
+
+function Test-SafeEnvValue {
+    param (
+        [AllowEmptyString()]
+        [string] $Value
+    )
+
+    return $Value -notmatch '[^\x20-\x7E]'
+}
+
+function Test-PortValue {
+    param (
+        [string] $Value
+    )
+
+    $port = 0
+    return [int]::TryParse($Value, [ref] $port) -and $port -ge 1 -and $port -le 65535
+}
+
+function Test-OptionalPluginsValue {
+    param (
+        [string] $Value
+    )
+
+    if ($Value -eq "none") {
+        return $true
+    }
+
+    $allowedPlugins = @("all-in-one-wp-migration", "updraftplus", "advanced-custom-fields")
+    $plugins = @($Value -split ',', -1)
+
+    if ($plugins.Count -eq 0 -or $plugins -contains "") {
+        return $false
+    }
+
+    foreach ($plugin in $plugins) {
+        if ($allowedPlugins -notcontains $plugin) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Assert-EnvFileStructure {
+    $item = Get-Item -LiteralPath $EnvFile -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Invalid or unsafe structure in $EnvFile."
+    }
+
+    $seenKeys = @{}
+    foreach ($line in Get-Content -LiteralPath $EnvFile) {
+        if (-not (Test-SafeEnvValue $line)) {
+            throw "Invalid or unsafe structure in $EnvFile."
+        }
+
+        if ([string]::IsNullOrEmpty($line) -or $line.StartsWith('#')) {
+            continue
+        }
+
+        if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=') {
+            throw "Invalid or unsafe structure in $EnvFile."
+        }
+
+        $key = $Matches[1]
+        if ($key -like 'COMPOSE_*' -and $key -ne 'COMPOSE_PROFILES') {
+            throw "Invalid or unsafe structure in $EnvFile."
+        }
+
+        if ($seenKeys.ContainsKey($key)) {
+            throw "Invalid or unsafe structure in $EnvFile."
+        }
+
+        $seenKeys[$key] = $true
+    }
+}
+
+function Assert-CurrentSettings {
+    $safeValues = @{
+        PHP_VERSION = $phpVersion
+        WORDPRESS_PORT = $wordPressPort
+        PHPMYADMIN_PORT = $phpMyAdminPort
+        MAILPIT_PORT = $mailpitPort
+        WORDPRESS_OPTIONAL_PLUGIN = $optionalPlugin
+        WORDPRESS_OBJECT_CACHE = $wordPressObjectCache
+        WORDPRESS_ADMIN_USER = $wordPressAdminUser
+        WORDPRESS_ADMIN_PASSWORD = $wordPressAdminPassword
+        WORDPRESS_ADMIN_PASSWORD_BASE64 = $wordPressAdminPasswordBase64
+        WORDPRESS_ADMIN_EMAIL = $wordPressAdminEmail
+    }
+
+    foreach ($entry in $safeValues.GetEnumerator()) {
+        if (-not (Test-SafeEnvValue $entry.Value)) {
+            throw "Invalid $($entry.Key) in $EnvFile."
+        }
+    }
+
+    if (@("8.1", "8.2", "8.3", "8.4", "8.5") -notcontains $phpVersion) {
+        throw "Invalid PHP_VERSION in $EnvFile."
+    }
+
+    foreach ($portEntry in @{
+        WORDPRESS_PORT = $wordPressPort
+        PHPMYADMIN_PORT = $phpMyAdminPort
+        MAILPIT_PORT = $mailpitPort
+    }.GetEnumerator()) {
+        if (-not (Test-PortValue $portEntry.Value)) {
+            throw "Invalid $($portEntry.Key) in $EnvFile."
+        }
+    }
+
+    if (-not (Test-OptionalPluginsValue $optionalPlugin)) {
+        throw "Invalid WORDPRESS_OPTIONAL_PLUGIN in $EnvFile."
+    }
+
+    if (@("none", "redis", "memcached") -notcontains $wordPressObjectCache) {
+        throw "Invalid WORDPRESS_OBJECT_CACHE in $EnvFile."
+    }
+
+    if ($wordPressAdminUser -notmatch '^[A-Za-z0-9._@-]{1,60}$') {
+        throw "Invalid WORDPRESS_ADMIN_USER in $EnvFile."
+    }
+
+    if ($wordPressAdminEmail -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') {
+        throw "Invalid WORDPRESS_ADMIN_EMAIL in $EnvFile."
+    }
+
+    if (
+        -not [string]::IsNullOrEmpty($wordPressAdminPasswordBase64) -and
+        (
+            $wordPressAdminPasswordBase64 -notmatch '^[A-Za-z0-9+/]+={0,2}$' -or
+            $wordPressAdminPasswordBase64.Length % 4 -ne 0
+        )
+    ) {
+        throw "Invalid WORDPRESS_ADMIN_PASSWORD_BASE64 in $EnvFile."
+    }
 }
 
 function Read-MenuChoice {
@@ -419,14 +565,26 @@ function Read-Port {
 function Read-PortChoice {
     param (
         [string] $Prompt,
-        [string] $DefaultPort
+        [string] $DefaultPort,
+        [AllowEmptyString()]
+        [string] $CurrentPort = ""
     )
 
     while ($true) {
-        $portChoice = Read-MenuChoice -Prompt $Prompt -Options @("Standard ($DefaultPort)", "Custom") -AllowBack
+        $currentOption = ""
+        if (-not [string]::IsNullOrEmpty($CurrentPort)) {
+            $currentOption = "Current settings ($(ConvertTo-SafeDisplayValue $CurrentPort))"
+            $portChoice = Read-MenuChoice -Prompt $Prompt -Options @($currentOption, "Custom") -AllowBack
+        } else {
+            $portChoice = Read-MenuChoice -Prompt $Prompt -Options @("Standard ($DefaultPort)", "Custom") -AllowBack
+        }
 
         if ($null -eq $portChoice) {
             return $null
+        }
+
+        if ($currentOption -and $portChoice -eq $currentOption) {
+            return $CurrentPort
         }
 
         if ($portChoice -eq "Standard ($DefaultPort)") {
@@ -534,6 +692,19 @@ function Get-LocalhostUrl {
     return "http://localhost:$Port"
 }
 
+$envItem = Get-Item -LiteralPath $EnvFile -Force -ErrorAction SilentlyContinue
+if (
+    $null -ne $envItem -and
+    (
+        $envItem.PSIsContainer -or
+        ($envItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    )
+) {
+    throw "Invalid or unsafe structure in $EnvFile."
+}
+
+$hasCurrentSettings = $null -ne $envItem
+
 $phpVersion = Get-EnvValueOrDefault "PHP_VERSION" $EnvFile $DefaultPhpVersion
 $wordPressPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPressPort
 $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMyAdminPort
@@ -546,6 +717,11 @@ $wordPressAdminPasswordBase64 = Get-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $
 $wordPressAdminEmail = Get-EnvValueOrDefault "WORDPRESS_ADMIN_EMAIL" $EnvFile $DefaultWordPressAdminEmail
 $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
 $previousWordPressObjectCache = Get-EnvValue "WORDPRESS_OBJECT_CACHE" $EnvFile
+
+if ($hasCurrentSettings) {
+    Assert-EnvFileStructure
+    Assert-CurrentSettings
+}
 
 if (@("none", "redis", "memcached") -notcontains $wordPressObjectCache) {
     $wordPressObjectCache = $DefaultWordPressObjectCache
@@ -566,10 +742,17 @@ $initialWordPressAdminEmail = $wordPressAdminEmail
 $initialWordPressPort = $wordPressPort
 $initialPhpMyAdminPort = $phpMyAdminPort
 $initialMailpitPort = $mailpitPort
+$initialWordPressAdminMode = Get-AdminModeLabel
+$initialPhpVersionDisplay = ConvertTo-SafeDisplayValue $initialPhpVersion
+$initialOptionalPluginDisplay = ConvertTo-SafeDisplayValue $initialOptionalPlugin
+$initialWordPressAdminUserDisplay = ConvertTo-SafeDisplayValue $initialWordPressAdminUser
+$initialWordPressPortDisplay = ConvertTo-SafeDisplayValue $initialWordPressPort
+$initialPhpMyAdminPortDisplay = ConvertTo-SafeDisplayValue $initialPhpMyAdminPort
+$initialMailpitPortDisplay = ConvertTo-SafeDisplayValue $initialMailpitPort
 
-if (Test-Path $EnvFile) {
+if ($hasCurrentSettings) {
     $adminModeLabel = Get-AdminModeLabel
-    $setupPrompt = "Current settings: PHP $phpVersion, WP port $wordPressPort, phpMyAdmin port $phpMyAdminPort, Mailpit port $mailpitPort, plugins: $optionalPlugin, object cache: $wordPressObjectCache, admin: $wordPressAdminUser ($adminModeLabel)`n`nChoose setup mode:"
+    $setupPrompt = "Current settings: PHP $initialPhpVersionDisplay, WP port $initialWordPressPortDisplay, phpMyAdmin port $initialPhpMyAdminPortDisplay, Mailpit port $initialMailpitPortDisplay, plugins: $initialOptionalPluginDisplay, object cache: $wordPressObjectCache, admin: $initialWordPressAdminUserDisplay ($adminModeLabel)`n`nChoose setup mode:"
     $keepOption = "Current settings"
 } else {
     $setupPrompt = "Choose setup mode:"
@@ -640,64 +823,125 @@ while (-not $done) {
             $step = 1
         }
     } elseif ($step -eq 1) {
-        $phpChoice = Read-MenuChoice -Prompt "Choose PHP version:" -Options @(
+        $phpOptions = @(
             "Standard (PHP $DefaultPhpVersion)",
             "PHP 8.1",
             "PHP 8.2",
             "PHP 8.4",
             "PHP 8.5"
-        ) -AllowBack -DefaultOption (Get-PhpVersionLabel $phpVersion)
+        )
+        $phpDefaultOption = Get-PhpVersionLabel $phpVersion
+        $currentPhpOption = ""
+        if ($hasCurrentSettings) {
+            $currentPhpOption = "Current settings (PHP $initialPhpVersionDisplay)"
+            $phpOptions = @($currentPhpOption) + $phpOptions
+            $phpDefaultOption = $currentPhpOption
+        }
+
+        $phpChoice = Read-MenuChoice -Prompt "Choose PHP version:" -Options $phpOptions -AllowBack -DefaultOption $phpDefaultOption
 
         if ($null -eq $phpChoice) {
             $step = 0
             continue
         }
 
-        switch ($phpChoice) {
-            "Standard (PHP $DefaultPhpVersion)" { $phpVersion = $DefaultPhpVersion }
-            "PHP 8.1" { $phpVersion = "8.1" }
-            "PHP 8.2" { $phpVersion = "8.2" }
-            "PHP 8.4" { $phpVersion = "8.4" }
-            "PHP 8.5" { $phpVersion = "8.5" }
+        if ($currentPhpOption -and $phpChoice -eq $currentPhpOption) {
+            $phpVersion = $initialPhpVersion
+        } else {
+            switch ($phpChoice) {
+                "Standard (PHP $DefaultPhpVersion)" { $phpVersion = $DefaultPhpVersion }
+                "PHP 8.1" { $phpVersion = "8.1" }
+                "PHP 8.2" { $phpVersion = "8.2" }
+                "PHP 8.4" { $phpVersion = "8.4" }
+                "PHP 8.5" { $phpVersion = "8.5" }
+            }
         }
 
         $step = 2
     } elseif ($step -eq 2) {
+        if ($hasCurrentSettings) {
+            $currentPluginOption = "Current settings ($initialOptionalPluginDisplay)"
+            $pluginSetupChoice = Read-MenuChoice -Prompt "Choose optional plugins:" -Options @(
+                $currentPluginOption,
+                "Custom"
+            ) -AllowBack
+
+            if ($null -eq $pluginSetupChoice) {
+                $step = 1
+                continue
+            }
+
+            if ($pluginSetupChoice -eq $currentPluginOption) {
+                $optionalPlugin = $initialOptionalPlugin
+                $step = 3
+                continue
+            }
+        }
+
         $pluginChoice = Read-OptionalPlugins $optionalPlugin
 
         if ($null -eq $pluginChoice) {
-            $step = 1
+            if (-not $hasCurrentSettings) {
+                $step = 1
+            }
             continue
         }
 
         $optionalPlugin = $pluginChoice
         $step = 3
     } elseif ($step -eq 3) {
-        $cacheChoice = Read-MenuChoice -Prompt "Choose WordPress object cache:" -Options @(
+        $cacheOptions = @(
             "None",
             "Redis",
             "Memcached"
-        ) -AllowBack -DefaultOption (Get-WordPressObjectCacheLabel $wordPressObjectCache)
+        )
+        $cacheDefaultOption = Get-WordPressObjectCacheLabel $wordPressObjectCache
+        $currentCacheOption = ""
+        if ($hasCurrentSettings) {
+            $currentCacheOption = "Current settings ($(Get-WordPressObjectCacheLabel $initialWordPressObjectCache))"
+            $cacheOptions = @($currentCacheOption) + $cacheOptions
+            $cacheDefaultOption = $currentCacheOption
+        }
+
+        $cacheChoice = Read-MenuChoice -Prompt "Choose WordPress object cache:" -Options $cacheOptions -AllowBack -DefaultOption $cacheDefaultOption
 
         if ($null -eq $cacheChoice) {
             $step = 2
             continue
         }
 
-        $wordPressObjectCache = $cacheChoice.ToLowerInvariant()
+        if ($currentCacheOption -and $cacheChoice -eq $currentCacheOption) {
+            $wordPressObjectCache = $initialWordPressObjectCache
+        } else {
+            $wordPressObjectCache = $cacheChoice.ToLowerInvariant()
+        }
         $step = 4
     } elseif ($step -eq 4) {
-        $adminChoice = Read-MenuChoice -Prompt "Choose WordPress administrator:" -Options @(
+        $adminOptions = @(
             "Default WordPress admin",
             "Custom WordPress admin"
-        ) -AllowBack -DefaultOption (Get-AdminModeLabel)
+        )
+        $adminDefaultOption = Get-AdminModeLabel
+        $currentAdminOption = ""
+        if ($hasCurrentSettings) {
+            $currentAdminOption = "Current settings ($initialWordPressAdminUserDisplay, $initialWordPressAdminMode)"
+            $adminOptions = @($currentAdminOption) + $adminOptions
+            $adminDefaultOption = $currentAdminOption
+        }
+
+        $adminChoice = Read-MenuChoice -Prompt "Choose WordPress administrator:" -Options $adminOptions -AllowBack -DefaultOption $adminDefaultOption
 
         if ($null -eq $adminChoice) {
             $step = 3
             continue
         }
 
-        if ($adminChoice -eq "Default WordPress admin") {
+        if ($currentAdminOption -and $adminChoice -eq $currentAdminOption) {
+            $wordPressAdminUser = $initialWordPressAdminUser
+            $wordPressAdminPassword = $initialWordPressAdminPassword
+            $wordPressAdminPasswordBase64 = $initialWordPressAdminPasswordBase64
+            $wordPressAdminEmail = $initialWordPressAdminEmail
+        } elseif ($adminChoice -eq "Default WordPress admin") {
             $wordPressAdminUser = $DefaultWordPressAdminUser
             $wordPressAdminPassword = $DefaultWordPressAdminPassword
             $wordPressAdminPasswordBase64 = ""
@@ -717,7 +961,8 @@ while (-not $done) {
 
         $step = 5
     } elseif ($step -eq 5) {
-        $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort
+        $currentPort = if ($hasCurrentSettings) { $initialWordPressPort } else { "" }
+        $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort $currentPort
 
         if ($null -eq $portChoice) {
             $step = 4
@@ -728,7 +973,8 @@ while (-not $done) {
         $phpMyAdminPrompt = "Choose phpMyAdmin port:"
         $step = 6
     } elseif ($step -eq 6) {
-        $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort
+        $currentPort = if ($hasCurrentSettings) { $initialPhpMyAdminPort } else { "" }
+        $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort $currentPort
 
         if ($null -eq $portChoice) {
             $step = 5
@@ -736,14 +982,15 @@ while (-not $done) {
         }
 
         if ($portChoice -eq $wordPressPort) {
-            $phpMyAdminPrompt = "phpMyAdmin port must be different from WordPress port ($wordPressPort).`n`nChoose phpMyAdmin port:"
+            $phpMyAdminPrompt = "phpMyAdmin port must be different from WordPress port ($(ConvertTo-SafeDisplayValue $wordPressPort)).`n`nChoose phpMyAdmin port:"
             continue
         }
 
         $phpMyAdminPort = $portChoice
         $step = 7
     } else {
-        $portChoice = Read-PortChoice "Choose Mailpit port:" $DefaultMailpitPort
+        $currentPort = if ($hasCurrentSettings) { $initialMailpitPort } else { "" }
+        $portChoice = Read-PortChoice "Choose Mailpit port:" $DefaultMailpitPort $currentPort
 
         if ($null -eq $portChoice) {
             $step = 6
@@ -765,14 +1012,23 @@ $phpMyAdminUrl = Get-LocalhostUrl $phpMyAdminPort
 $mailpitUrl = Get-LocalhostUrl $mailpitPort
 
 $envBackup = New-TemporaryFile
-$envExisted = Test-Path $EnvFile
+$envExisted = Test-Path -LiteralPath $EnvFile
 $composeExitCode = 0
 
 if ($envExisted) {
-    Copy-Item -Path $EnvFile -Destination $envBackup -Force
+    Copy-Item -LiteralPath $EnvFile -Destination $envBackup -Force
 }
 
 try {
+    if (-not $envExisted) {
+        [IO.File]::WriteAllText($EnvFile, "")
+    }
+
+    if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {
+        $privateEnvMode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+        [IO.File]::SetUnixFileMode($EnvFile, $privateEnvMode)
+    }
+
     Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
     Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
     Set-EnvValue "WORDPRESS_OBJECT_CACHE" $wordPressObjectCache $EnvFile
@@ -790,10 +1046,10 @@ try {
         Clear-Host
     }
 
-    Write-Host "Starting WordPress with PHP $phpVersion..."
-    Write-Host "WordPress URL: $wordPressUrl"
-    Write-Host "phpMyAdmin URL: $phpMyAdminUrl"
-    Write-Host "Mailpit URL: $mailpitUrl"
+    Write-Host "Starting WordPress with PHP $(ConvertTo-SafeDisplayValue $phpVersion)..."
+    Write-Host "WordPress URL: $(ConvertTo-SafeDisplayValue $wordPressUrl)"
+    Write-Host "phpMyAdmin URL: $(ConvertTo-SafeDisplayValue $phpMyAdminUrl)"
+    Write-Host "Mailpit URL: $(ConvertTo-SafeDisplayValue $mailpitUrl)"
     Write-Host "WordPress object cache: $wordPressObjectCache"
 
     if ([string]::IsNullOrEmpty($previousPhpVersion)) {
@@ -813,7 +1069,7 @@ try {
     Write-Host "ERROR: $($_.Exception.Message) Restoring the previous .env." -ForegroundColor Red
 
     if ($envExisted) {
-        Copy-Item -Path $envBackup -Destination $EnvFile -Force
+        Copy-Item -LiteralPath $envBackup -Destination $EnvFile -Force
         docker compose up -d --wait --wait-timeout 360
         if ($LASTEXITCODE -eq 0) {
             $rollbackObjectCache = if ([string]::IsNullOrEmpty($previousWordPressObjectCache)) {
@@ -825,8 +1081,8 @@ try {
         } else {
             Write-Host "ERROR: the previous configuration could not be restarted automatically." -ForegroundColor Red
         }
-    } elseif (Test-Path $EnvFile) {
-        Remove-Item -Path $EnvFile -Force
+    } elseif (Test-Path -LiteralPath $EnvFile) {
+        Remove-Item -LiteralPath $EnvFile -Force
     }
 
     if ($composeExitCode -eq 0) {
@@ -834,7 +1090,7 @@ try {
     }
     exit $composeExitCode
 } finally {
-    Remove-Item -Path $envBackup -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $envBackup -Force -ErrorAction SilentlyContinue
 }
 
 Stop-UnselectedCache $wordPressObjectCache
