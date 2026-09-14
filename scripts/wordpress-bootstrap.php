@@ -101,6 +101,29 @@ function fast_wordpress_start_https_downgrade_buffer()
     ob_start('fast_wordpress_downgrade_local_https');
 }
 
+function fast_wordpress_cron_loopback($cron_request)
+{
+    $parts = parse_url($cron_request['url']);
+
+    if (
+        empty($parts['path'])
+        || ($parts['scheme'] ?? '') !== 'http'
+        || ! in_array($parts['host'] ?? '', array('localhost', '127.0.0.1', '[::1]'), true)
+    ) {
+        return $cron_request;
+    }
+
+    $cron_request['url'] = 'http://localhost' . $parts['path']
+        . (isset($parts['query']) ? '?' . $parts['query'] : '');
+
+    return $cron_request;
+}
+
+$GLOBALS['wp_filter']['cron_request'][10][] = array(
+    'function' => 'fast_wordpress_cron_loopback',
+    'accepted_args' => 1,
+);
+
 $GLOBALS['wp_filter']['wp_mail_from'][10][] = array(
     'function' => 'fast_wordpress_mailpit_from',
     'accepted_args' => 1,
