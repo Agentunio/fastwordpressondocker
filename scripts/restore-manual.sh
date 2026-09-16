@@ -246,7 +246,6 @@ detect_table_prefix() {
 }
 
 restore_database() {
-    local imported_url
     local table_prefix
 
     echo "[manual-restore] Replacing the database from $(basename "$SQL_FILE")..."
@@ -260,17 +259,7 @@ restore_database() {
         fail "The SQL file does not contain a complete WordPress database."
     fi
 
-    imported_url="$(wp --path="$WORDPRESS_DIR" --allow-root option get home --skip-plugins --skip-themes 2>/dev/null || true)"
-    if [ -n "$imported_url" ] && [ "$imported_url" != "$WORDPRESS_URL" ]; then
-        echo "[manual-restore] Replacing $imported_url with $WORDPRESS_URL..."
-        wp --path="$WORDPRESS_DIR" --allow-root search-replace \
-            "$imported_url" "$WORDPRESS_URL" \
-            --all-tables-with-prefix --skip-columns=guid --report-changed-only \
-            --skip-plugins --skip-themes
-    fi
-
-    wp --path="$WORDPRESS_DIR" --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
-    wp --path="$WORDPRESS_DIR" --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
+    wp --path="$WORDPRESS_DIR" --allow-root eval-file /scripts/sync-wordpress-url.php "$WORDPRESS_URL" --skip-plugins --skip-themes
     wp --path="$WORDPRESS_DIR" --allow-root core update-db --skip-plugins --skip-themes
 }
 

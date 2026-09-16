@@ -156,7 +156,7 @@ Every clone of this repo is an independent environment. Docker Compose uses the 
 ./start.sh
 ```
 
-Choose `Custom settings`, then pick custom WordPress, phpMyAdmin and Mailpit ports. The wrapper writes `.env` for you, including a matching `WORDPRESS_URL`, which is re-applied to `home`/`siteurl` on every container start — an existing installation adapts to new ports automatically.
+Choose `Custom settings`, then pick custom WordPress, phpMyAdmin and Mailpit ports. The wrapper writes `.env` for you, including a matching `WORDPRESS_URL`. On container startup, the previous database `home`/`siteurl` addresses are migrated to that URL in stored content, custom menu links, settings and plugin tables with the WordPress table prefix and a primary key. Serialized values and JSON URLs are supported; GUIDs and links already using the destination URL are preserved. The same migration runs when restoring a snapshot or importing a manual backup, followed by an object-cache flush and the final `home`/`siteurl` update.
 
 ## Testing email with Mailpit
 

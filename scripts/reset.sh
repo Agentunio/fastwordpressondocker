@@ -58,8 +58,7 @@ tar xzf /snapshots/state-0-wp-content.tar.gz -C /var/www/html
 
 bash /scripts/restore-object-cache-ownership.sh --from-state-zero
 bash /scripts/apply-object-cache.sh --flush
-wp --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
-wp --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
+wp --allow-root eval-file /scripts/sync-wordpress-url.php "$WORDPRESS_URL" --skip-plugins --skip-themes
 bash /scripts/apply-optional-plugin.sh
 bash /scripts/install-local-plugins.sh
 

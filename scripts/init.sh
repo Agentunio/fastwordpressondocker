@@ -122,14 +122,13 @@ if [ "$INSTALLED_RC" -eq 0 ]; then
     mkdir -p /snapshots
     repair_missing_default_theme
     wp --allow-root config set WP_AUTO_UPDATE_CORE false --raw
-    wp --allow-root option update home "$WORDPRESS_URL" --skip-plugins --skip-themes
-    wp --allow-root option update siteurl "$WORDPRESS_URL" --skip-plugins --skip-themes
+    bash /scripts/apply-object-cache.sh
+    wp --allow-root eval-file /scripts/sync-wordpress-url.php "$WORDPRESS_URL" --skip-plugins --skip-themes
     active_theme="$(wp --allow-root option get stylesheet --skip-plugins --skip-themes 2>/dev/null || true)"
     if [ -n "$active_theme" ] && [ ! -d "wp-content/themes/$active_theme" ]; then
         echo "[init] Active theme files missing - activating twentytwentyfive..."
         wp --allow-root theme activate twentytwentyfive --skip-plugins --skip-themes
     fi
-    bash /scripts/apply-object-cache.sh
     bash /scripts/apply-optional-plugin.sh
     bash /scripts/install-local-plugins.sh
     if [ "$CORE_CONTENT_REPAIRED" -eq 1 ]; then
