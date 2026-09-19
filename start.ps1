@@ -18,6 +18,36 @@ $DefaultWordPressAdminPassword = "R40U8zp17YlwvQNkDEKgnhx2!@#"
 $DefaultWordPressAdminEmail = "admin@example.com"
 $EnvFile = Join-Path $PSScriptRoot ".env"
 
+function Assert-WordPressStorage {
+    $containerIds = @(docker compose ps --all --quiet wordpress)
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect the existing WordPress service. Startup cancelled." }
+    if ($containerIds.Count -eq 0) { return }
+
+    $configuration = docker compose config --format json
+    if ($LASTEXITCODE -ne 0) { throw "Cannot resolve Compose storage configuration. Startup cancelled." }
+    # Base64 preserves PHP quotes under Windows PowerShell's native argument handling.
+    $validator = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('?>' + (Get-Content -LiteralPath (Join-Path $PSScriptRoot "scripts/check-wordpress-storage.php") -Raw)))
+
+    foreach ($containerId in $containerIds) {
+        $mounts = docker inspect --format '{{json .Mounts}}' $containerId
+        if ($LASTEXITCODE -ne 0) { throw "Cannot inspect WordPress storage. Startup cancelled." }
+        $image = docker inspect --format '{{.Image}}' $containerId
+        if ($LASTEXITCODE -ne 0 -or $image -notmatch '^sha256:[a-f0-9]{64}$') {
+            throw "Cannot identify the existing WordPress image. Startup cancelled."
+        }
+
+        # Use the cached image without mounting site data or starting WordPress.
+        $previousOutputEncoding = $OutputEncoding
+        try {
+            $OutputEncoding = [Text.UTF8Encoding]::new($false)
+            (@($mounts) + @($configuration) -join "`n") | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges -i --entrypoint php $image -r 'eval(base64_decode($argv[1]));' -- $validator
+            if ($LASTEXITCODE -ne 0) { throw "WordPress storage check failed. The existing container was not recreated." }
+        } finally {
+            $OutputEncoding = $previousOutputEncoding
+        }
+    }
+}
+
 function Set-EnvValue {
     param (
         [string] $Key,
@@ -1056,6 +1086,7 @@ try {
     $envBackup = New-TemporaryFile
     $envExisted = Test-Path -LiteralPath $EnvFile
     $composeExitCode = 0
+    $composeStarted = $false
 
     if ($envExisted) {
         Copy-Item -LiteralPath $EnvFile -Destination $envBackup -Force
@@ -1096,6 +1127,8 @@ try {
         Write-Host "Mailpit URL: $(ConvertTo-SafeDisplayValue $mailpitUrl)"
         Write-Host "WordPress object cache: $wordPressObjectCache"
 
+        Assert-WordPressStorage
+        $composeStarted = $true
         if ([string]::IsNullOrEmpty($previousPhpVersion)) {
             docker compose up -d --build --wait --wait-timeout 360
         } elseif ($previousPhpVersion -ne $phpVersion) {
@@ -1115,16 +1148,18 @@ try {
         if ($envExisted) {
             Copy-Item -LiteralPath $envBackup -Destination $EnvFile -Force
             Sync-ComposePortEnvironment
-            docker compose up -d --wait --wait-timeout 360
-            if ($LASTEXITCODE -eq 0) {
-                $rollbackObjectCache = if ([string]::IsNullOrEmpty($previousWordPressObjectCache)) {
-                    "none"
+            if ($composeStarted) {
+                docker compose up -d --wait --wait-timeout 360
+                if ($LASTEXITCODE -eq 0) {
+                    $rollbackObjectCache = if ([string]::IsNullOrEmpty($previousWordPressObjectCache)) {
+                        "none"
+                    } else {
+                        $previousWordPressObjectCache
+                    }
+                    Stop-UnselectedCache $rollbackObjectCache
                 } else {
-                    $previousWordPressObjectCache
+                    Write-Host "ERROR: the previous configuration could not be restarted automatically." -ForegroundColor Red
                 }
-                Stop-UnselectedCache $rollbackObjectCache
-            } else {
-                Write-Host "ERROR: the previous configuration could not be restarted automatically." -ForegroundColor Red
             }
         } elseif (Test-Path -LiteralPath $EnvFile) {
             Remove-Item -LiteralPath $EnvFile -Force

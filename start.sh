@@ -34,6 +34,34 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+assert_wordpress_storage() {
+    local container_ids configuration validator container_id mounts image
+    container_ids="$(docker compose ps --all --quiet wordpress)" || {
+        echo "ERROR: cannot inspect the existing WordPress service. Startup cancelled." >&2
+        return 1
+    }
+    [ -n "$container_ids" ] || return 0
+
+    configuration="$(docker compose config --format json)" || {
+        echo "ERROR: cannot resolve Compose storage configuration. Startup cancelled." >&2
+        return 1
+    }
+    validator="?>$(cat "$(dirname -- "${BASH_SOURCE[0]}")/scripts/check-wordpress-storage.php")" || return 1
+    while IFS= read -r container_id; do
+        mounts="$(docker inspect --format '{{json .Mounts}}' "$container_id")" || return 1
+        image="$(docker inspect --format '{{.Image}}' "$container_id")" || return 1
+        if [[ ! "$image" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "ERROR: cannot identify the existing WordPress image. Startup cancelled." >&2
+            return 1
+        fi
+        # Use the cached image without mounting site data or starting WordPress.
+        if ! printf '%s\n%s\n' "$mounts" "$configuration" | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges -i --entrypoint php "$image" -r "$validator"; then
+            echo "ERROR: WordPress storage check failed. The existing container was not recreated." >&2
+            return 1
+        fi
+    done <<< "$container_ids"
+}
+
 set_env_value() {
     local key="$1"
     local value="$2"
@@ -1332,6 +1360,9 @@ echo "WordPress URL: ${wordpress_url_display}"
 echo "phpMyAdmin URL: ${phpmyadmin_url_display}"
 echo "Mailpit URL: ${mailpit_url_display}"
 echo "WordPress object cache: ${wordpress_object_cache}"
+
+# The EXIT trap restores .env on rejection, without applying the unsafe Compose file.
+assert_wordpress_storage || exit 1
 
 compose_status=0
 if [ -z "$previous_php_version" ]; then
