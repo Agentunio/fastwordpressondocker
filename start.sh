@@ -3,6 +3,9 @@ set -euo pipefail
 
 DEFAULT_PHP_VERSION="8.3"
 DEFAULT_WORDPRESS_PORT="80"
+DEFAULT_WORDPRESS_HTTPS="0"
+DEFAULT_WORDPRESS_HTTP_VERSION="1.1"
+DEFAULT_WORDPRESS_HTTPS_PORT="443"
 DEFAULT_PHPMYADMIN_PORT="8080"
 DEFAULT_MAILPIT_PORT="8025"
 DEFAULT_OPTIONAL_PLUGIN="none"
@@ -15,6 +18,7 @@ manual_restore=0
 env_backup=""
 env_existed=0
 env_rollback_pending=0
+compose_runtime_changed=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -35,7 +39,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 assert_wordpress_storage() {
-    local container_ids configuration validator container_id mounts image
+    local container_ids configuration validator container_id mounts image engine_os docker_desktop=0
     container_ids="$(docker compose ps --all --quiet wordpress)" || {
         echo "ERROR: cannot inspect the existing WordPress service. Startup cancelled." >&2
         return 1
@@ -46,6 +50,11 @@ assert_wordpress_storage() {
         echo "ERROR: cannot resolve Compose storage configuration. Startup cancelled." >&2
         return 1
     }
+    engine_os="$(docker info --format '{{.OperatingSystem}}')" || {
+        echo "ERROR: cannot identify the Docker engine. Startup cancelled." >&2
+        return 1
+    }
+    if [ "$engine_os" = "Docker Desktop" ]; then docker_desktop=1; fi
     validator="?>$(cat "$(dirname -- "${BASH_SOURCE[0]}")/scripts/check-wordpress-storage.php")" || return 1
     while IFS= read -r container_id; do
         mounts="$(docker inspect --format '{{json .Mounts}}' "$container_id")" || return 1
@@ -55,7 +64,7 @@ assert_wordpress_storage() {
             return 1
         fi
         # Use the cached image without mounting site data or starting WordPress.
-        if ! printf '%s\n%s\n' "$mounts" "$configuration" | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges -i --entrypoint php "$image" -r "$validator"; then
+        if ! printf '%s\n%s\n' "$mounts" "$configuration" | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges --env "FAST_WORDPRESS_DOCKER_DESKTOP=$docker_desktop" -i --entrypoint php "$image" -r "$validator"; then
             echo "ERROR: WordPress storage check failed. The existing container was not recreated." >&2
             return 1
         fi
@@ -203,6 +212,9 @@ validate_current_settings() {
     done <<EOF
 PHP_VERSION|${php_version}
 WORDPRESS_PORT|${wordpress_port}
+WORDPRESS_HTTPS|${wordpress_https}
+WORDPRESS_HTTP_VERSION|${wordpress_http_version}
+WORDPRESS_HTTPS_PORT|${wordpress_https_port}
 PHPMYADMIN_PORT|${phpmyadmin_port}
 MAILPIT_PORT|${mailpit_port}
 WORDPRESS_OPTIONAL_PLUGIN|${optional_plugin}
@@ -219,6 +231,11 @@ EOF
     esac
 
     is_valid_port "$wordpress_port" || invalid_env_value "WORDPRESS_PORT" || return 1
+    is_valid_port "$wordpress_https_port" || invalid_env_value "WORDPRESS_HTTPS_PORT" || return 1
+    case "$wordpress_https:$wordpress_http_version" in
+        0:1.1|1:1.1|1:2) ;;
+        *) invalid_env_value "WORDPRESS_HTTPS / WORDPRESS_HTTP_VERSION" || return 1 ;;
+    esac
     is_valid_port "$phpmyadmin_port" || invalid_env_value "PHPMYADMIN_PORT" || return 1
     is_valid_port "$mailpit_port" || invalid_env_value "MAILPIT_PORT" || return 1
     is_valid_optional_plugins "$optional_plugin" || invalid_env_value "WORDPRESS_OPTIONAL_PLUGIN" || return 1
@@ -247,20 +264,45 @@ restore_tty_echo() {
     stty echo icanon 2>/dev/null < /dev/tty || true
 }
 
+rollback_launcher() {
+    [ "$env_rollback_pending" -eq 1 ] || return 0
+    env_rollback_pending=0
+
+    if [ "$env_existed" -eq 1 ]; then
+        if ! cp "$env_backup" "$ENV_FILE"; then
+            echo "ERROR: the previous .env could not be restored; backup retained at ${env_backup}." >&2
+            return 1
+        fi
+        if [ "$compose_runtime_changed" -eq 1 ]; then
+            sync_compose_transport_environment
+            stop_unselected_https "$previous_wordpress_https" || true
+            if ! docker compose up -d --wait --wait-timeout 360; then
+                echo "ERROR: the previous configuration could not be restarted automatically." >&2
+            else
+                stop_unselected_cache "${previous_wordpress_object_cache:-none}" || true
+            fi
+        fi
+    else
+        # Keep the attempted configuration available until all of its services stop.
+        if [ "$compose_runtime_changed" -eq 1 ]; then
+            docker compose stop || true
+        fi
+        rm -f -- "$ENV_FILE"
+    fi
+}
+
 cleanup_launcher() {
+    local exit_status=$?
+    trap - EXIT
+    # Complete one rollback even if another interrupt arrives during recovery.
+    trap '' INT TERM
+    set +e
     restore_tty_echo
 
-    if [ "$env_rollback_pending" -eq 1 ] && [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
-        if [ "$env_existed" -eq 1 ]; then
-            cp "$env_backup" "$ENV_FILE"
-        else
-            rm -f -- "$ENV_FILE"
-        fi
-    fi
-
-    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+    if rollback_launcher && [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
         rm -f -- "$env_backup"
     fi
+    exit "$exit_status"
 }
 
 trap cleanup_launcher EXIT
@@ -273,7 +315,8 @@ open_menu_tty() {
         return 1
     fi
 
-    trap 'close_menu_tty; exit 130' INT TERM
+    trap 'close_menu_tty; exit 130' INT
+    trap 'close_menu_tty; exit 143' TERM
 
     stty -echo -icanon min 1 time 0 2>/dev/null <&3 || true
 }
@@ -820,6 +863,7 @@ choose_port() {
     local prompt="$1"
     local default_port="$2"
     local current_port="${3:-}"
+    local include_standard="${4:-0}"
     local port_choice
     local port
     local rc
@@ -831,7 +875,11 @@ choose_port() {
         if [ -n "$current_port" ]; then
             safe_display_value current_port_display "$current_port"
             current_option="Current settings (${current_port_display})"
-            port_choice="$(choose_option --allow-back "$prompt" "$current_option" "Custom")" || rc=$?
+            if [ "$include_standard" = "1" ]; then
+                port_choice="$(choose_option --allow-back "$prompt" "$current_option" "Standard (${default_port})" "Custom")" || rc=$?
+            else
+                port_choice="$(choose_option --allow-back "$prompt" "$current_option" "Custom")" || rc=$?
+            fi
         else
             port_choice="$(choose_option --allow-back "$prompt" "Standard (${default_port})" "Custom")" || rc=$?
         fi
@@ -965,11 +1013,12 @@ admin_mode_label() {
 
 localhost_url() {
     local port="$1"
+    local scheme="${2:-http}"
 
-    if [ "$port" = "80" ]; then
-        echo "http://localhost"
+    if { [ "$scheme" = "http" ] && [ "$port" = "80" ]; } || { [ "$scheme" = "https" ] && [ "$port" = "443" ]; }; then
+        echo "${scheme}://localhost"
     else
-        echo "http://localhost:${port}"
+        echo "${scheme}://localhost:${port}"
     fi
 }
 
@@ -980,6 +1029,9 @@ fi
 
 php_version="$(env_value_or_default "PHP_VERSION" "$DEFAULT_PHP_VERSION")"
 wordpress_port="$(env_value_or_default "WORDPRESS_PORT" "$DEFAULT_WORDPRESS_PORT")"
+wordpress_https="$(env_value_or_default "WORDPRESS_HTTPS" "$DEFAULT_WORDPRESS_HTTPS")"
+wordpress_http_version="$(env_value_or_default "WORDPRESS_HTTP_VERSION" "$DEFAULT_WORDPRESS_HTTP_VERSION")"
+wordpress_https_port="$(env_value_or_default "WORDPRESS_HTTPS_PORT" "$DEFAULT_WORDPRESS_HTTPS_PORT")"
 phpmyadmin_port="$(env_value_or_default "PHPMYADMIN_PORT" "$DEFAULT_PHPMYADMIN_PORT")"
 mailpit_port="$(env_value_or_default "MAILPIT_PORT" "$DEFAULT_MAILPIT_PORT")"
 optional_plugin="$(env_value_or_default "WORDPRESS_OPTIONAL_PLUGIN" "$DEFAULT_OPTIONAL_PLUGIN")"
@@ -990,6 +1042,7 @@ wordpress_admin_password_base64="$(get_env_value "WORDPRESS_ADMIN_PASSWORD_BASE6
 wordpress_admin_email="$(env_value_or_default "WORDPRESS_ADMIN_EMAIL" "$DEFAULT_WORDPRESS_ADMIN_EMAIL")"
 previous_php_version="$(get_env_value "PHP_VERSION" "$ENV_FILE")"
 previous_wordpress_object_cache="$(get_env_value "WORDPRESS_OBJECT_CACHE" "$ENV_FILE")"
+previous_wordpress_https="$wordpress_https"
 
 if [ -f "$ENV_FILE" ]; then
     validate_env_file_structure || exit 1
@@ -1014,6 +1067,9 @@ initial_wordpress_admin_password="$wordpress_admin_password"
 initial_wordpress_admin_password_base64="$wordpress_admin_password_base64"
 initial_wordpress_admin_email="$wordpress_admin_email"
 initial_wordpress_port="$wordpress_port"
+initial_wordpress_https="$wordpress_https"
+initial_wordpress_http_version="$wordpress_http_version"
+initial_wordpress_https_port="$wordpress_https_port"
 initial_phpmyadmin_port="$phpmyadmin_port"
 initial_mailpit_port="$mailpit_port"
 initial_wordpress_admin_mode="$(admin_mode_label)"
@@ -1034,6 +1090,11 @@ has_current_settings=0
 if [ -f "$ENV_FILE" ]; then
     has_current_settings=1
     printf "Current settings: PHP %s, WP port %s, phpMyAdmin port %s, Mailpit port %s, plugins: %s, object cache: %s, admin: %s (%s)\n\n" "$initial_php_version_display" "$initial_wordpress_port_display" "$initial_phpmyadmin_port_display" "$initial_mailpit_port_display" "$initial_optional_plugin_display" "$wordpress_object_cache" "$initial_wordpress_admin_user_display" "$initial_wordpress_admin_mode" >&2
+    if [ "$wordpress_https" = "1" ]; then
+        printf 'HTTPS enabled, port %s, HTTP/%s\n\n' "$wordpress_https_port" "$wordpress_http_version" >&2
+    else
+        printf 'HTTPS disabled, HTTP/1.1\n\n' >&2
+    fi
     keep_option="Current settings"
 else
     keep_option="Default settings"
@@ -1069,6 +1130,36 @@ stop_unselected_cache() {
     esac
 }
 
+stop_unselected_https() {
+    if [ "$1" = "0" ]; then
+        docker compose stop https
+    fi
+}
+
+sync_compose_transport_environment() {
+    WORDPRESS_HTTPS="$(env_value_or_default WORDPRESS_HTTPS 0)"
+    WORDPRESS_HTTP_VERSION="$(env_value_or_default WORDPRESS_HTTP_VERSION 1.1)"
+    WORDPRESS_HTTPS_PORT="$(env_value_or_default WORDPRESS_HTTPS_PORT 443)"
+    WORDPRESS_PORT="$(env_value_or_default WORDPRESS_PORT 80)"
+    WORDPRESS_URL="$(env_value_or_default WORDPRESS_URL "$(localhost_url "$WORDPRESS_PORT")")"
+    COMPOSE_PROFILES="$(env_value_or_default COMPOSE_PROFILES none)"
+    export WORDPRESS_HTTPS WORDPRESS_HTTP_VERSION WORDPRESS_HTTPS_PORT WORDPRESS_PORT WORDPRESS_URL COMPOSE_PROFILES
+}
+
+verify_https() {
+    local actual_version
+    actual_version="$(docker compose exec -T wordpress curl \
+        --fail --silent --show-error --max-time 30 \
+        "--http${wordpress_http_version}" \
+        --cacert /usr/local/share/fast-wordpress-ca/root.crt \
+        --connect-to "localhost:${wordpress_https_port}:https:443" \
+        --output /dev/null --write-out '%{http_version}' "$wordpress_url")" || return 1
+    if [ "$actual_version" != "$wordpress_http_version" ]; then
+        echo "ERROR: HTTPS negotiated HTTP/${actual_version}, expected HTTP/${wordpress_http_version}." >&2
+        return 1
+    fi
+}
+
 step=0
 while true; do
     case "$step" in
@@ -1092,6 +1183,9 @@ while true; do
                 wordpress_admin_password_base64="$initial_wordpress_admin_password_base64"
                 wordpress_admin_email="$initial_wordpress_admin_email"
                 wordpress_port="$initial_wordpress_port"
+                wordpress_https="$initial_wordpress_https"
+                wordpress_http_version="$initial_wordpress_http_version"
+                wordpress_https_port="$initial_wordpress_https_port"
                 phpmyadmin_port="$initial_phpmyadmin_port"
                 mailpit_port="$initial_mailpit_port"
                 break
@@ -1247,6 +1341,30 @@ while true; do
                 wordpress_admin_email="$custom_admin_email"
             fi
 
+            step=https
+            ;;
+        https)
+            rc=0
+            https_default="No (default)"
+            [ "$wordpress_https" != "1" ] || https_default="Yes"
+            https_choice="$(choose_option --allow-back --default "$https_default" "Enable HTTPS?" "No (default)" "Yes")" || rc=$?
+            if [ "$rc" -eq 2 ]; then step=4; continue; fi
+            if [ "$rc" -ne 0 ]; then exit 1; fi
+            if [ "$https_choice" = "Yes" ]; then
+                wordpress_https=1
+                step=protocol
+            else
+                wordpress_https=0
+                wordpress_http_version=1.1
+                step=5
+            fi
+            ;;
+        protocol)
+            rc=0
+            protocol_choice="$(choose_option --allow-back --default "HTTP/${wordpress_http_version}" "Choose HTTP protocol:" "HTTP/1.1" "HTTP/2")" || rc=$?
+            if [ "$rc" -eq 2 ]; then step=https; continue; fi
+            if [ "$rc" -ne 0 ]; then exit 1; fi
+            wordpress_http_version="${protocol_choice#HTTP/}"
             step=5
             ;;
         5)
@@ -1257,7 +1375,7 @@ while true; do
             fi
             port_choice="$(choose_port "Choose WordPress port:" "$DEFAULT_WORDPRESS_PORT" "$current_port")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=4
+                if [ "$wordpress_https" = "1" ]; then step=protocol; else step=https; fi
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
@@ -1265,6 +1383,20 @@ while true; do
             fi
 
             wordpress_port="$port_choice"
+            if [ "$wordpress_https" = "1" ]; then step=https-port; else step=6; fi
+            ;;
+        https-port)
+            rc=0
+            current_port=""
+            if [ "$has_current_settings" -eq 1 ] && [ "$initial_wordpress_https" = "1" ]; then current_port="$initial_wordpress_https_port"; fi
+            port_choice="$(choose_port "Choose HTTPS port:" "$DEFAULT_WORDPRESS_HTTPS_PORT" "$current_port" 1)" || rc=$?
+            if [ "$rc" -eq 2 ]; then step=5; continue; fi
+            if [ "$rc" -ne 0 ]; then exit 1; fi
+            if [ "$port_choice" = "$wordpress_port" ]; then
+                echo "HTTPS port must be different from WordPress HTTP port." >&2
+                continue
+            fi
+            wordpress_https_port="$port_choice"
             step=6
             ;;
         6)
@@ -1275,17 +1407,17 @@ while true; do
             fi
             port_choice="$(choose_port "Choose phpMyAdmin port:" "$DEFAULT_PHPMYADMIN_PORT" "$current_port")" || rc=$?
             if [ "$rc" -eq 2 ]; then
-                step=5
+                if [ "$wordpress_https" = "1" ]; then step=https-port; else step=5; fi
                 continue
             fi
             if [ "$rc" -ne 0 ]; then
                 exit 1
             fi
 
-            if [ "$port_choice" = "$wordpress_port" ]; then
+            if [ "$port_choice" = "$wordpress_port" ] || { [ "$wordpress_https" = "1" ] && [ "$port_choice" = "$wordpress_https_port" ]; }; then
                 wordpress_port_display=""
                 safe_display_value wordpress_port_display "$wordpress_port"
-                echo "phpMyAdmin port must be different from WordPress port (${wordpress_port_display})." >&2
+                echo "phpMyAdmin port must be different from WordPress HTTP and HTTPS ports." >&2
                 continue
             fi
 
@@ -1307,8 +1439,8 @@ while true; do
                 exit 1
             fi
 
-            if [ "$port_choice" = "$wordpress_port" ] || [ "$port_choice" = "$phpmyadmin_port" ]; then
-                echo "Mailpit port must be different from WordPress and phpMyAdmin ports." >&2
+            if [ "$port_choice" = "$wordpress_port" ] || [ "$port_choice" = "$phpmyadmin_port" ] || { [ "$wordpress_https" = "1" ] && [ "$port_choice" = "$wordpress_https_port" ]; }; then
+                echo "Mailpit port must be different from WordPress HTTP/HTTPS and phpMyAdmin ports." >&2
                 continue
             fi
 
@@ -1318,7 +1450,20 @@ while true; do
     esac
 done
 
-wordpress_url="$(localhost_url "$wordpress_port")"
+validate_current_settings
+for port_variable in wordpress_port wordpress_https_port phpmyadmin_port mailpit_port; do
+    printf -v "$port_variable" '%s' "$((10#${!port_variable}))"
+done
+
+if [ "$wordpress_https" = "1" ]; then
+    if [ "$wordpress_https_port" = "$wordpress_port" ] || [ "$wordpress_https_port" = "$phpmyadmin_port" ] || [ "$wordpress_https_port" = "$mailpit_port" ]; then
+        echo "ERROR: HTTPS port must be different from all other service ports." >&2
+        exit 1
+    fi
+    wordpress_url="$(localhost_url "$wordpress_https_port" https)"
+else
+    wordpress_url="$(localhost_url "$wordpress_port")"
+fi
 phpmyadmin_url="$(localhost_url "$phpmyadmin_port")"
 mailpit_url="$(localhost_url "$mailpit_port")"
 
@@ -1337,15 +1482,21 @@ chmod 600 "$ENV_FILE"
 set_env_value "PHP_VERSION" "$php_version" "$ENV_FILE"
 set_env_value "WORDPRESS_OPTIONAL_PLUGIN" "$optional_plugin" "$ENV_FILE"
 set_env_value "WORDPRESS_OBJECT_CACHE" "$wordpress_object_cache" "$ENV_FILE"
-set_env_value "COMPOSE_PROFILES" "$wordpress_object_cache" "$ENV_FILE"
+compose_profiles="$wordpress_object_cache"
+if [ "$wordpress_https" = "1" ]; then compose_profiles="${compose_profiles},https"; fi
+set_env_value "COMPOSE_PROFILES" "$compose_profiles" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_USER" "$wordpress_admin_user" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_PASSWORD" "$wordpress_admin_password" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_PASSWORD_BASE64" "$wordpress_admin_password_base64" "$ENV_FILE"
 set_env_value "WORDPRESS_ADMIN_EMAIL" "$wordpress_admin_email" "$ENV_FILE"
 set_env_value "WORDPRESS_PORT" "$wordpress_port" "$ENV_FILE"
+set_env_value "WORDPRESS_HTTPS" "$wordpress_https" "$ENV_FILE"
+set_env_value "WORDPRESS_HTTP_VERSION" "$wordpress_http_version" "$ENV_FILE"
+set_env_value "WORDPRESS_HTTPS_PORT" "$wordpress_https_port" "$ENV_FILE"
 set_env_value "WORDPRESS_URL" "$wordpress_url" "$ENV_FILE"
 set_env_value "PHPMYADMIN_PORT" "$phpmyadmin_port" "$ENV_FILE"
 set_env_value "MAILPIT_PORT" "$mailpit_port" "$ENV_FILE"
+sync_compose_transport_environment
 
 php_version_display=""
 wordpress_url_display=""
@@ -1360,33 +1511,39 @@ echo "WordPress URL: ${wordpress_url_display}"
 echo "phpMyAdmin URL: ${phpmyadmin_url_display}"
 echo "Mailpit URL: ${mailpit_url_display}"
 echo "WordPress object cache: ${wordpress_object_cache}"
+echo "WordPress protocol: HTTP/${wordpress_http_version} (HTTPS: ${wordpress_https})"
 
 # The EXIT trap restores .env on rejection, without applying the unsafe Compose file.
 assert_wordpress_storage || exit 1
 
 compose_status=0
-if [ -z "$previous_php_version" ]; then
+if [ "$wordpress_https" = "0" ]; then
+    compose_runtime_changed=1
+    stop_unselected_https "$wordpress_https" || compose_status=$?
+fi
+if [ "$compose_status" -ne 0 ]; then
+    :
+elif [ -z "$previous_php_version" ]; then
+    compose_runtime_changed=1
     docker compose up -d --build --wait --wait-timeout 360 || compose_status=$?
 elif [ "$previous_php_version" != "$php_version" ]; then
     echo "Rebuilding image because PHP version changed."
+    compose_runtime_changed=1
     docker compose up -d --build --wait --wait-timeout 360 || compose_status=$?
 else
+    compose_runtime_changed=1
     docker compose up -d --wait --wait-timeout 360 || compose_status=$?
 fi
 
-if [ "$compose_status" -ne 0 ]; then
-    echo "ERROR: the new configuration did not become healthy; restoring the previous .env." >&2
-    if [ "$env_existed" -eq 1 ]; then
-        cp "$env_backup" "$ENV_FILE"
-        if ! docker compose up -d --wait --wait-timeout 360; then
-            echo "ERROR: the previous configuration could not be restarted automatically." >&2
-        else
-            stop_unselected_cache "${previous_wordpress_object_cache:-none}" || true
-        fi
-    else
-        rm -f -- "$ENV_FILE"
+if [ "$compose_status" -eq 0 ] && [ "$wordpress_https" = "1" ]; then
+    verify_https || compose_status=$?
+    if [ "$compose_status" -eq 0 ]; then
+        bash ./scripts/trust-local-ca.sh || compose_status=$?
     fi
-    env_rollback_pending=0
+fi
+
+if [ "$compose_status" -ne 0 ]; then
+    echo "ERROR: the new configuration could not be verified; restoring the previous .env." >&2
     exit "$compose_status"
 fi
 

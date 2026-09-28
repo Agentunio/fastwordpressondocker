@@ -165,7 +165,7 @@ $assert_same(true, strpos($float_serialized, 'd:1.0;') !== false, 'Noncanonical 
 $write_meta('boundaries', $unchanged);
 $write_meta('float_unchanged', $float_serialized);
 
-foreach (array('http://localhost:82', 'http://localhost:83', 'http://localhost') as $target) {
+foreach (array('http://localhost:82', 'https://localhost', 'https://localhost:8443', 'http://localhost:83', 'http://localhost') as $target) {
     $already_target = $target . '/already?ref=1';
     $key_only = str_replace('d:1;', 'd:1.0;', serialize(array($base . '/key-only' => 1.0)));
     $write_meta('already_target', $already_target);

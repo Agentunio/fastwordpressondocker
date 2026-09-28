@@ -29,6 +29,7 @@ services:
       WORDPRESS_DB_USER: wp
       WORDPRESS_DB_PASSWORD: wp
       WORDPRESS_URL: ${WORDPRESS_URL:-http://localhost}
+      WORDPRESS_HTTPS: ${WORDPRESS_HTTPS:-0}
       WORDPRESS_OPTIONAL_PLUGIN: ${WORDPRESS_OPTIONAL_PLUGIN:-none}
       WORDPRESS_OBJECT_CACHE: ${WORDPRESS_OBJECT_CACHE:-none}
       WORDPRESS_ADMIN_USER: ${WORDPRESS_ADMIN_USER:-admin_qmpgfd}
@@ -42,9 +43,11 @@ services:
       - ./wp-content:/var/www/html/wp-content
       - ./scripts:/scripts:ro
       - ./scripts/wordpress-admin-guardian.ini:/usr/local/etc/php/conf.d/wordpress-admin-guardian.ini:ro
+      - ./scripts/wordpress-proxy.conf:/etc/apache2/conf-enabled/fast-wordpress-proxy.conf:ro
       - ./plugins:/plugins:ro
       - ./manual:/manual:ro
       - ./snapshots:/snapshots
+      - https_ca:/usr/local/share/fast-wordpress-ca:ro
     networks:
       - default
       - cache
@@ -56,6 +59,30 @@ services:
       start_period: 300s
     entrypoint: ["/scripts/entrypoint.sh"]
     command: ["apache2-foreground"]
+
+  https:
+    image: caddy:2.11.4-alpine
+    profiles: ["https"]
+    depends_on:
+      wordpress:
+        condition: service_started
+    environment:
+      WORDPRESS_HTTPS: ${WORDPRESS_HTTPS:-0}
+      WORDPRESS_HTTP_VERSION: ${WORDPRESS_HTTP_VERSION:-1.1}
+    ports:
+      - "127.0.0.1:${WORDPRESS_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./.local/https:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./scripts/caddy-entrypoint.sh:/usr/local/bin/fast-wordpress-caddy:ro
+      - https_ca:/ca
+    entrypoint: ["/bin/sh", "/usr/local/bin/fast-wordpress-caddy"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /ca/root.crt && wget -q -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:8.10.0-alpine
@@ -114,6 +141,7 @@ services:
 volumes:
   db_data:
   wp_data:
+  https_ca:
 
 networks:
   cache:

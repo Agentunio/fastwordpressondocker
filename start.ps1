@@ -1,6 +1,9 @@
 param (
     [switch] $ManualRestore,
     [string] $WordPressPort,
+    [string] $WordPressHttps,
+    [string] $WordPressHttpVersion,
+    [string] $WordPressHttpsPort,
     [string] $PhpMyAdminPort,
     [string] $MailpitPort
 )
@@ -9,6 +12,9 @@ $ErrorActionPreference = "Stop"
 
 $DefaultPhpVersion = "8.3"
 $DefaultWordPressPort = "80"
+$DefaultWordPressHttps = "0"
+$DefaultWordPressHttpVersion = "1.1"
+$DefaultWordPressHttpsPort = "443"
 $DefaultPhpMyAdminPort = "8080"
 $DefaultMailpitPort = "8025"
 $DefaultOptionalPlugin = "none"
@@ -25,6 +31,9 @@ function Assert-WordPressStorage {
 
     $configuration = docker compose config --format json
     if ($LASTEXITCODE -ne 0) { throw "Cannot resolve Compose storage configuration. Startup cancelled." }
+    $engineOs = docker info --format '{{.OperatingSystem}}'
+    if ($LASTEXITCODE -ne 0) { throw "Cannot identify the Docker engine. Startup cancelled." }
+    $dockerDesktop = if ($engineOs -ceq "Docker Desktop") { "1" } else { "0" }
     # Base64 preserves PHP quotes under Windows PowerShell's native argument handling.
     $validator = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('?>' + (Get-Content -LiteralPath (Join-Path $PSScriptRoot "scripts/check-wordpress-storage.php") -Raw)))
 
@@ -40,7 +49,7 @@ function Assert-WordPressStorage {
         $previousOutputEncoding = $OutputEncoding
         try {
             $OutputEncoding = [Text.UTF8Encoding]::new($false)
-            (@($mounts) + @($configuration) -join "`n") | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges -i --entrypoint php $image -r 'eval(base64_decode($argv[1]));' -- $validator
+            (@($mounts) + @($configuration) -join "`n") | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges --env "FAST_WORDPRESS_DOCKER_DESKTOP=$dockerDesktop" -i --entrypoint php $image -r 'eval(base64_decode($argv[1]));' -- $validator
             if ($LASTEXITCODE -ne 0) { throw "WordPress storage check failed. The existing container was not recreated." }
         } finally {
             $OutputEncoding = $previousOutputEncoding
@@ -203,6 +212,9 @@ function Assert-CurrentSettings {
     $safeValues = @{
         PHP_VERSION = $phpVersion
         WORDPRESS_PORT = $wordPressPort
+        WORDPRESS_HTTPS = $wordPressHttps
+        WORDPRESS_HTTP_VERSION = $wordPressHttpVersion
+        WORDPRESS_HTTPS_PORT = $wordPressHttpsPort
         PHPMYADMIN_PORT = $phpMyAdminPort
         MAILPIT_PORT = $mailpitPort
         WORDPRESS_OPTIONAL_PLUGIN = $optionalPlugin
@@ -223,8 +235,17 @@ function Assert-CurrentSettings {
         throw "Invalid PHP_VERSION in $EnvFile."
     }
 
+    if (@("0", "1") -notcontains $wordPressHttps) {
+        throw "Invalid WORDPRESS_HTTPS in $EnvFile. Use 0 or 1."
+    }
+
+    if (@("1.1", "2") -notcontains $wordPressHttpVersion -or ($wordPressHttps -eq "0" -and $wordPressHttpVersion -ne "1.1")) {
+        throw "Invalid WORDPRESS_HTTP_VERSION in $EnvFile. HTTP/2 requires HTTPS."
+    }
+
     foreach ($portEntry in @{
         WORDPRESS_PORT = $wordPressPort
+        WORDPRESS_HTTPS_PORT = $wordPressHttpsPort
         PHPMYADMIN_PORT = $phpMyAdminPort
         MAILPIT_PORT = $mailpitPort
     }.GetEnumerator()) {
@@ -600,14 +621,19 @@ function Read-PortChoice {
         [string] $Prompt,
         [string] $DefaultPort,
         [AllowEmptyString()]
-        [string] $CurrentPort = ""
+        [string] $CurrentPort = "",
+        [switch] $IncludeStandard
     )
 
     while ($true) {
         $currentOption = ""
         if (-not [string]::IsNullOrEmpty($CurrentPort)) {
             $currentOption = "Current settings ($(ConvertTo-SafeDisplayValue $CurrentPort))"
-            $portChoice = Read-MenuChoice -Prompt $Prompt -Options @($currentOption, "Custom") -AllowBack
+            $portOptions = @($currentOption, "Custom")
+            if ($IncludeStandard) {
+                $portOptions = @($currentOption, "Standard ($DefaultPort)", "Custom")
+            }
+            $portChoice = Read-MenuChoice -Prompt $Prompt -Options $portOptions -AllowBack
         } else {
             $portChoice = Read-MenuChoice -Prompt $Prompt -Options @("Standard ($DefaultPort)", "Custom") -AllowBack
         }
@@ -715,22 +741,45 @@ function Get-AdminModeLabel {
 
 function Get-LocalhostUrl {
     param (
-        [string] $Port
+        [string] $Port,
+        [string] $Scheme = "http"
     )
 
-    if ($Port -eq "80") {
-        return "http://localhost"
+    if (($Scheme -eq "http" -and $Port -eq "80") -or ($Scheme -eq "https" -and $Port -eq "443")) {
+        return "${Scheme}://localhost"
     }
 
-    return "http://localhost:$Port"
+    return "${Scheme}://localhost:$Port"
+}
+
+function Get-ComposeProfiles {
+    param (
+        [string] $ObjectCache,
+        [string] $HttpsEnabled
+    )
+
+    if ($HttpsEnabled -eq "1") {
+        return "$ObjectCache,https"
+    }
+
+    return $ObjectCache
 }
 
 function Sync-ComposePortEnvironment {
+    $storedHttps = Get-EnvValueOrDefault "WORDPRESS_HTTPS" $EnvFile $DefaultWordPressHttps
+    $storedCache = Get-EnvValueOrDefault "WORDPRESS_OBJECT_CACHE" $EnvFile $DefaultWordPressObjectCache
+    $storedHttpPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPressPort
+    $storedHttpsPort = Get-EnvValueOrDefault "WORDPRESS_HTTPS_PORT" $EnvFile $DefaultWordPressHttpsPort
+    $defaultUrl = if ($storedHttps -eq "1") { Get-LocalhostUrl $storedHttpsPort "https" } else { Get-LocalhostUrl $storedHttpPort }
     $defaults = @{
         WORDPRESS_PORT = $DefaultWordPressPort
-        WORDPRESS_URL = "http://localhost"
+        WORDPRESS_HTTPS = $DefaultWordPressHttps
+        WORDPRESS_HTTP_VERSION = $DefaultWordPressHttpVersion
+        WORDPRESS_HTTPS_PORT = $DefaultWordPressHttpsPort
+        WORDPRESS_URL = $defaultUrl
         PHPMYADMIN_PORT = $DefaultPhpMyAdminPort
         MAILPIT_PORT = $DefaultMailpitPort
+        COMPOSE_PROFILES = (Get-ComposeProfiles $storedCache $storedHttps)
     }
 
     foreach ($key in $defaults.Keys) {
@@ -740,6 +789,34 @@ function Sync-ComposePortEnvironment {
         $value = Get-EnvValueOrDefault $key $EnvFile $defaults[$key]
         [Environment]::SetEnvironmentVariable($key, $value, "Process")
     }
+}
+
+function Stop-UnselectedHttps {
+    param ([string] $HttpsEnabled)
+
+    if ($HttpsEnabled -eq "0") {
+        docker compose --profile https stop https
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not stop the HTTPS service."
+        }
+    }
+}
+
+function Assert-TrustedHttps {
+    param ([string] $Url)
+
+    $actualVersion = docker compose exec -T wordpress curl --fail --silent --show-error --max-time 30 `
+        "--http$wordPressHttpVersion" --cacert /usr/local/share/fast-wordpress-ca/root.crt `
+        --connect-to "localhost:${wordPressHttpsPort}:https:443" --output /dev/null --write-out '%{http_version}' $Url
+    if ($LASTEXITCODE -ne 0 -or $actualVersion -ne $wordPressHttpVersion) {
+        throw "HTTPS did not negotiate the selected HTTP/$wordPressHttpVersion protocol."
+    }
+    & (Join-Path $PSScriptRoot "scripts/trust-local-ca.ps1")
+    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 30 -MaximumRedirection 5
+    if ($response.StatusCode -ne 200) {
+        throw "HTTPS did not return a successful response."
+    }
+    Write-Host "Local HTTPS certificate is trusted. HTTP/$wordPressHttpVersion enabled."
 }
 
 $previousProcessEnvironment = @{}
@@ -760,6 +837,9 @@ try {
 
     $phpVersion = Get-EnvValueOrDefault "PHP_VERSION" $EnvFile $DefaultPhpVersion
     $wordPressPort = Get-EnvValueOrDefault "WORDPRESS_PORT" $EnvFile $DefaultWordPressPort
+    $wordPressHttps = Get-EnvValueOrDefault "WORDPRESS_HTTPS" $EnvFile $DefaultWordPressHttps
+    $wordPressHttpVersion = Get-EnvValueOrDefault "WORDPRESS_HTTP_VERSION" $EnvFile $DefaultWordPressHttpVersion
+    $wordPressHttpsPort = Get-EnvValueOrDefault "WORDPRESS_HTTPS_PORT" $EnvFile $DefaultWordPressHttpsPort
     $phpMyAdminPort = Get-EnvValueOrDefault "PHPMYADMIN_PORT" $EnvFile $DefaultPhpMyAdminPort
     $mailpitPort = Get-EnvValueOrDefault "MAILPIT_PORT" $EnvFile $DefaultMailpitPort
     $optionalPlugin = Get-EnvValueOrDefault "WORDPRESS_OPTIONAL_PLUGIN" $EnvFile $DefaultOptionalPlugin
@@ -770,6 +850,7 @@ try {
     $wordPressAdminEmail = Get-EnvValueOrDefault "WORDPRESS_ADMIN_EMAIL" $EnvFile $DefaultWordPressAdminEmail
     $previousPhpVersion = Get-EnvValue "PHP_VERSION" $EnvFile
     $previousWordPressObjectCache = Get-EnvValue "WORDPRESS_OBJECT_CACHE" $EnvFile
+    $previousWordPressHttps = $wordPressHttps
 
     if ($hasCurrentSettings) {
         Assert-EnvFileStructure
@@ -777,11 +858,14 @@ try {
     }
 
     $hasPortOverrides = $false
-    foreach ($parameterName in @("WordPressPort", "PhpMyAdminPort", "MailpitPort")) {
+    foreach ($parameterName in @("WordPressPort", "PhpMyAdminPort", "MailpitPort", "WordPressHttps", "WordPressHttpVersion", "WordPressHttpsPort")) {
         if ($PSBoundParameters.ContainsKey($parameterName)) {
             Set-Variable -Name $parameterName -Value $PSBoundParameters[$parameterName]
             $hasPortOverrides = $true
         }
+    }
+    if ($PSBoundParameters.ContainsKey("WordPressHttps") -and $wordPressHttps -eq "0" -and -not $PSBoundParameters.ContainsKey("WordPressHttpVersion")) {
+        $wordPressHttpVersion = $DefaultWordPressHttpVersion
     }
 
     if (@("none", "redis", "memcached") -notcontains $wordPressObjectCache) {
@@ -801,6 +885,9 @@ try {
     $initialWordPressAdminPasswordBase64 = $wordPressAdminPasswordBase64
     $initialWordPressAdminEmail = $wordPressAdminEmail
     $initialWordPressPort = $wordPressPort
+    $initialWordPressHttps = $wordPressHttps
+    $initialWordPressHttpVersion = $wordPressHttpVersion
+    $initialWordPressHttpsPort = $wordPressHttpsPort
     $initialPhpMyAdminPort = $phpMyAdminPort
     $initialMailpitPort = $mailpitPort
     $initialWordPressAdminMode = Get-AdminModeLabel
@@ -810,10 +897,11 @@ try {
     $initialWordPressPortDisplay = ConvertTo-SafeDisplayValue $initialWordPressPort
     $initialPhpMyAdminPortDisplay = ConvertTo-SafeDisplayValue $initialPhpMyAdminPort
     $initialMailpitPortDisplay = ConvertTo-SafeDisplayValue $initialMailpitPort
+    $initialTransportDisplay = if ($initialWordPressHttps -eq "1") { "HTTPS, HTTP/$initialWordPressHttpVersion, HTTPS port $(ConvertTo-SafeDisplayValue $initialWordPressHttpsPort)" } else { "HTTP, HTTP/1.1" }
 
     if ($hasCurrentSettings) {
         $adminModeLabel = Get-AdminModeLabel
-        $setupPrompt = "Current settings: PHP $initialPhpVersionDisplay, WP port $initialWordPressPortDisplay, phpMyAdmin port $initialPhpMyAdminPortDisplay, Mailpit port $initialMailpitPortDisplay, plugins: $initialOptionalPluginDisplay, object cache: $wordPressObjectCache, admin: $initialWordPressAdminUserDisplay ($adminModeLabel)`n`nChoose setup mode:"
+        $setupPrompt = "Current settings: PHP $initialPhpVersionDisplay, WP port $initialWordPressPortDisplay, $initialTransportDisplay, phpMyAdmin port $initialPhpMyAdminPortDisplay, Mailpit port $initialMailpitPortDisplay, plugins: $initialOptionalPluginDisplay, object cache: $wordPressObjectCache, admin: $initialWordPressAdminUserDisplay ($adminModeLabel)`n`nChoose setup mode:"
         $keepOption = "Current settings"
     } else {
         $setupPrompt = "Choose setup mode:"
@@ -877,6 +965,9 @@ try {
                 $wordPressAdminPasswordBase64 = $initialWordPressAdminPasswordBase64
                 $wordPressAdminEmail = $initialWordPressAdminEmail
                 $wordPressPort = $initialWordPressPort
+                $wordPressHttps = $initialWordPressHttps
+                $wordPressHttpVersion = $initialWordPressHttpVersion
+                $wordPressHttpsPort = $initialWordPressHttpsPort
                 $phpMyAdminPort = $initialPhpMyAdminPort
                 $mailpitPort = $initialMailpitPort
                 $done = $true
@@ -1022,44 +1113,95 @@ try {
 
             $step = 5
         } elseif ($step -eq 5) {
+            $httpsOptions = @("No (default)", "Yes")
+            $currentHttpsOption = ""
+            if ($hasCurrentSettings) {
+                $currentHttpsOption = "Current settings ($initialTransportDisplay)"
+                $httpsOptions = @($currentHttpsOption) + $httpsOptions
+            }
+            $httpsChoice = Read-MenuChoice -Prompt "Enable HTTPS?" -Options $httpsOptions -AllowBack
+            if ($null -eq $httpsChoice) {
+                $step = 4
+                continue
+            }
+            if ($currentHttpsOption -and $httpsChoice -eq $currentHttpsOption) {
+                $wordPressHttps = $initialWordPressHttps
+                $wordPressHttpVersion = $initialWordPressHttpVersion
+            } else {
+                $wordPressHttps = if ($httpsChoice -eq "Yes") { "1" } else { "0" }
+                $wordPressHttpVersion = $DefaultWordPressHttpVersion
+            }
+            $step = if ($wordPressHttps -eq "1") { 6 } else { 7 }
+        } elseif ($step -eq 6) {
+            $protocolOptions = @("HTTP/1.1", "HTTP/2")
+            $currentProtocolOption = ""
+            if ($hasCurrentSettings -and $initialWordPressHttps -eq "1") {
+                $currentProtocolOption = "Current settings (HTTP/$initialWordPressHttpVersion)"
+                $protocolOptions = @($currentProtocolOption) + $protocolOptions
+            }
+            $protocolChoice = Read-MenuChoice -Prompt "Choose HTTP protocol:" -Options $protocolOptions -AllowBack
+            if ($null -eq $protocolChoice) {
+                $step = 5
+                continue
+            }
+            if ($currentProtocolOption -and $protocolChoice -eq $currentProtocolOption) {
+                $wordPressHttpVersion = $initialWordPressHttpVersion
+            } else {
+                $wordPressHttpVersion = if ($protocolChoice -eq "HTTP/2") { "2" } else { "1.1" }
+            }
+            $step = 7
+        } elseif ($step -eq 7) {
             $currentPort = if ($hasCurrentSettings) { $initialWordPressPort } else { "" }
-            $portChoice = Read-PortChoice "Choose WordPress port:" $DefaultWordPressPort $currentPort
+            $portChoice = Read-PortChoice "Choose WordPress HTTP port:" $DefaultWordPressPort $currentPort
 
             if ($null -eq $portChoice) {
-                $step = 4
+                $step = if ($wordPressHttps -eq "1") { 6 } else { 5 }
                 continue
             }
 
             $wordPressPort = $portChoice
             $phpMyAdminPrompt = "Choose phpMyAdmin port:"
-            $step = 6
-        } elseif ($step -eq 6) {
+            $step = if ($wordPressHttps -eq "1") { 8 } else { 9 }
+        } elseif ($step -eq 8) {
+            $currentPort = if ($hasCurrentSettings -and $initialWordPressHttps -eq "1") { $initialWordPressHttpsPort } else { "" }
+            $portChoice = Read-PortChoice "Choose WordPress HTTPS port:" $DefaultWordPressHttpsPort $currentPort -IncludeStandard
+            if ($null -eq $portChoice) {
+                $step = 7
+                continue
+            }
+            if ($portChoice -eq $wordPressPort) {
+                Write-Host "WordPress HTTPS port must be different from the HTTP port."
+                continue
+            }
+            $wordPressHttpsPort = $portChoice
+            $step = 9
+        } elseif ($step -eq 9) {
             $currentPort = if ($hasCurrentSettings) { $initialPhpMyAdminPort } else { "" }
             $portChoice = Read-PortChoice $phpMyAdminPrompt $DefaultPhpMyAdminPort $currentPort
 
             if ($null -eq $portChoice) {
-                $step = 5
+                $step = if ($wordPressHttps -eq "1") { 8 } else { 7 }
                 continue
             }
 
-            if ($portChoice -eq $wordPressPort) {
-                $phpMyAdminPrompt = "phpMyAdmin port must be different from WordPress port ($(ConvertTo-SafeDisplayValue $wordPressPort)).`n`nChoose phpMyAdmin port:"
+            if ($portChoice -eq $wordPressPort -or ($wordPressHttps -eq "1" -and $portChoice -eq $wordPressHttpsPort)) {
+                $phpMyAdminPrompt = "phpMyAdmin port must be different from WordPress HTTP and HTTPS ports.`n`nChoose phpMyAdmin port:"
                 continue
             }
 
             $phpMyAdminPort = $portChoice
-            $step = 7
+            $step = 10
         } else {
             $currentPort = if ($hasCurrentSettings) { $initialMailpitPort } else { "" }
             $portChoice = Read-PortChoice "Choose Mailpit port:" $DefaultMailpitPort $currentPort
 
             if ($null -eq $portChoice) {
-                $step = 6
+                $step = 9
                 continue
             }
 
-            if ($portChoice -eq $wordPressPort -or $portChoice -eq $phpMyAdminPort) {
-                Write-Host "Mailpit port must be different from WordPress and phpMyAdmin ports."
+            if ($portChoice -eq $wordPressPort -or $portChoice -eq $phpMyAdminPort -or ($wordPressHttps -eq "1" -and $portChoice -eq $wordPressHttpsPort)) {
+                Write-Host "Mailpit port must be different from WordPress HTTP, HTTPS and phpMyAdmin ports."
                 continue
             }
 
@@ -1068,7 +1210,7 @@ try {
         }
     }
 
-    foreach ($parameterName in @("WordPressPort", "PhpMyAdminPort", "MailpitPort")) {
+    foreach ($parameterName in @("WordPressPort", "PhpMyAdminPort", "MailpitPort", "WordPressHttpsPort")) {
         $value = Get-Variable -Name $parameterName -ValueOnly
         if (-not (Test-PortValue $value)) {
             throw "$parameterName must be a number from 1 to 65535."
@@ -1079,7 +1221,12 @@ try {
         throw "WordPress, phpMyAdmin and Mailpit ports must be different."
     }
 
-    $wordPressUrl = Get-LocalhostUrl $wordPressPort
+    if ($wordPressHttps -eq "1" -and @($wordPressPort, $phpMyAdminPort, $mailpitPort) -contains $wordPressHttpsPort) {
+        throw "WordPress HTTPS port must be different from all HTTP service ports."
+    }
+    Assert-CurrentSettings
+
+    $wordPressUrl = if ($wordPressHttps -eq "1") { Get-LocalhostUrl $wordPressHttpsPort "https" } else { Get-LocalhostUrl $wordPressPort }
     $phpMyAdminUrl = Get-LocalhostUrl $phpMyAdminPort
     $mailpitUrl = Get-LocalhostUrl $mailpitPort
 
@@ -1105,12 +1252,15 @@ try {
         Set-EnvValue "PHP_VERSION" $phpVersion $EnvFile
         Set-EnvValue "WORDPRESS_OPTIONAL_PLUGIN" $optionalPlugin $EnvFile
         Set-EnvValue "WORDPRESS_OBJECT_CACHE" $wordPressObjectCache $EnvFile
-        Set-EnvValue "COMPOSE_PROFILES" $wordPressObjectCache $EnvFile
+        Set-EnvValue "COMPOSE_PROFILES" (Get-ComposeProfiles $wordPressObjectCache $wordPressHttps) $EnvFile
         Set-EnvValue "WORDPRESS_ADMIN_USER" $wordPressAdminUser $EnvFile
         Set-EnvValue "WORDPRESS_ADMIN_PASSWORD" $wordPressAdminPassword $EnvFile
         Set-EnvValue "WORDPRESS_ADMIN_PASSWORD_BASE64" $wordPressAdminPasswordBase64 $EnvFile
         Set-EnvValue "WORDPRESS_ADMIN_EMAIL" $wordPressAdminEmail $EnvFile
         Set-EnvValue "WORDPRESS_PORT" $wordPressPort $EnvFile
+        Set-EnvValue "WORDPRESS_HTTPS" $wordPressHttps $EnvFile
+        Set-EnvValue "WORDPRESS_HTTP_VERSION" $wordPressHttpVersion $EnvFile
+        Set-EnvValue "WORDPRESS_HTTPS_PORT" $wordPressHttpsPort $EnvFile
         Set-EnvValue "WORDPRESS_URL" $wordPressUrl $EnvFile
         Set-EnvValue "PHPMYADMIN_PORT" $phpMyAdminPort $EnvFile
         Set-EnvValue "MAILPIT_PORT" $mailpitPort $EnvFile
@@ -1129,6 +1279,8 @@ try {
 
         Assert-WordPressStorage
         $composeStarted = $true
+        Stop-UnselectedHttps $wordPressHttps
+
         if ([string]::IsNullOrEmpty($previousPhpVersion)) {
             docker compose up -d --build --wait --wait-timeout 360
         } elseif ($previousPhpVersion -ne $phpVersion) {
@@ -1142,6 +1294,9 @@ try {
         if ($composeExitCode -ne 0) {
             throw "The new configuration did not become healthy."
         }
+        if ($wordPressHttps -eq "1") {
+            Assert-TrustedHttps $wordPressUrl
+        }
     } catch {
         Write-Host "ERROR: $($_.Exception.Message) Restoring the previous .env." -ForegroundColor Red
 
@@ -1149,6 +1304,7 @@ try {
             Copy-Item -LiteralPath $envBackup -Destination $EnvFile -Force
             Sync-ComposePortEnvironment
             if ($composeStarted) {
+                Stop-UnselectedHttps $previousWordPressHttps
                 docker compose up -d --wait --wait-timeout 360
                 if ($LASTEXITCODE -eq 0) {
                     $rollbackObjectCache = if ([string]::IsNullOrEmpty($previousWordPressObjectCache)) {
@@ -1162,7 +1318,9 @@ try {
                 }
             }
         } elseif (Test-Path -LiteralPath $EnvFile) {
+            if ($composeStarted) { docker compose stop }
             Remove-Item -LiteralPath $EnvFile -Force
+            Sync-ComposePortEnvironment
         }
 
         if ($composeExitCode -eq 0) {

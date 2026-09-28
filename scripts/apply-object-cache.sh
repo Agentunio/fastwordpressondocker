@@ -354,8 +354,13 @@ case "$OBJECT_CACHE_MODE" in
         fi
 
         if [ "$current_dropin" = "none" ] || [ "$managed_dropin" -eq 1 ]; then
-            install -o www-data -g www-data -m 644 \
-                "$MEMCACHED_DROPIN_SOURCE" "$OBJECT_CACHE_DROPIN"
+            patched_dropin="$(mktemp)"
+            if ! php /scripts/patch-memcached-dropin.php "$MEMCACHED_DROPIN_SOURCE" > "$patched_dropin" \
+                || ! install -o www-data -g www-data -m 644 "$patched_dropin" "$OBJECT_CACHE_DROPIN"; then
+                rm -f -- "$patched_dropin"
+                exit 1
+            fi
+            rm -f -- "$patched_dropin"
             record_dropin_ownership memcached
         else
             echo "[object-cache] Preserving the existing unmanaged Memcached drop-in."

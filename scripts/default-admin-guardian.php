@@ -24,6 +24,77 @@ function fast_wordpress_admin_credentials()
     );
 }
 
+function fast_wordpress_admin_password_signature($password, $hash, $user_id, $login)
+{
+    global $wpdb, $wp_hasher, $wp_version;
+
+    // Custom password checkers may depend on state other than the stored hash.
+    if (! empty($wp_hasher) || has_filter('check_password') !== false) {
+        return null;
+    }
+
+    foreach (array('AUTH_KEY', 'AUTH_SALT') as $constant) {
+        if (! defined($constant)) {
+            return null;
+        }
+        $value = constant($constant);
+        if (! is_string($value) || strlen($value) < 32 || strlen(count_chars($value, 3)) < 8 || strpos($value, 'put your unique phrase here') !== false) {
+            return null;
+        }
+    }
+    if (AUTH_KEY === AUTH_SALT) {
+        return null;
+    }
+
+    $core_file = realpath(ABSPATH . WPINC . '/pluggable.php');
+    $checker = new ReflectionFunction('wp_check_password');
+    if ($core_file === false || realpath($checker->getFileName() ?: '') !== $core_file) {
+        return null;
+    }
+
+    // Bind the proof to the exact verified inputs; the database never receives the plaintext password.
+    $payload = serialize(array('guardian-password-v1', $wp_version, DB_HOST, DB_NAME, $wpdb->users, (int) $user_id, $login, $password, $hash));
+
+    return hash_hmac('sha256', $payload, AUTH_KEY . AUTH_SALT);
+}
+
+function fast_wordpress_admin_password_matches($password, $user_id, $login)
+{
+    global $wpdb;
+
+    // Imports and direct SQL can leave an object cache stale. Read the current hash from the database.
+    $previous_suppress_errors = $wpdb->suppress_errors(true);
+    $hash = $wpdb->get_var($wpdb->prepare(
+        "SELECT user_pass FROM {$wpdb->users} WHERE ID = %d AND user_login = %s LIMIT 1",
+        $user_id,
+        $login
+    ));
+    $read_failed = $wpdb->last_error !== '';
+    $wpdb->suppress_errors($previous_suppress_errors);
+    if ($read_failed || ! is_string($hash)) {
+        return null;
+    }
+
+    $option = 'fast_wordpress_admin_password_verified';
+    $signature = fast_wordpress_admin_password_signature($password, $hash, $user_id, $login);
+    if ($signature !== null) {
+        $verified = get_option($option);
+        if (is_string($verified) && hash_equals($signature, $verified)) {
+            return true;
+        }
+    }
+
+    $matches = wp_check_password($password, $hash, (int) $user_id);
+    if ($matches && $signature !== null) {
+        // Sign the hash that was checked, even if another request changes it before this write.
+        update_option($option, $signature, false);
+    } elseif (! $matches) {
+        delete_option($option);
+    }
+
+    return (bool) $matches;
+}
+
 function fast_wordpress_ensure_default_admin()
 {
     static $running = false;
@@ -122,7 +193,11 @@ function fast_wordpress_ensure_default_admin()
         $user = new WP_User((int) $user_id);
         $updates = array('ID' => (int) $user_id);
 
-        if (! wp_check_password($password_for_wordpress, $user->user_pass, (int) $user_id)) {
+        $password_matches = fast_wordpress_admin_password_matches($password_for_wordpress, (int) $user_id, $login);
+        if ($password_matches === null) {
+            return;
+        }
+        if (! $password_matches) {
             $updates['user_pass'] = $password;
         }
 
@@ -132,9 +207,13 @@ function fast_wordpress_ensure_default_admin()
 
         if ((! $email_owner_id || (int) $email_owner_id === (int) $user_id) && $user->user_email !== $email) {
             $updates['user_email'] = $email;
+            // An SQL import can release this address without clearing its previous owner mapping.
+            wp_cache_delete($email, 'useremail');
         }
 
         if (count($updates) > 1) {
+            // wp_update_user merges the whole cached record, including its password hash.
+            clean_user_cache((int) $user_id);
             wp_update_user(wp_slash($updates));
             clean_user_cache((int) $user_id);
             $user = new WP_User((int) $user_id);
@@ -142,6 +221,8 @@ function fast_wordpress_ensure_default_admin()
 
         if (! in_array('administrator', $user->roles, true)) {
             $user->set_role('administrator');
+            // A concurrent repair can make the metadata UPDATE a no-op, leaving this worker's cache stale.
+            clean_user_cache((int) $user_id);
         }
     } finally {
         if ($lock_acquired) {

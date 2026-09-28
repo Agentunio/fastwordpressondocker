@@ -1,0 +1,12 @@
+{
+	auto_https disable_redirects
+	skip_install_trust
+	servers {
+		protocols {$FWD_HTTP_PROTOCOLS}
+	}
+}
+
+https://localhost, https://127.0.0.1, https://[::1] {
+	tls internal
+	reverse_proxy wordpress:80
+}

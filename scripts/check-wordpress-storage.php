@@ -5,30 +5,42 @@
     $fail = static function ($message) {
         throw new RuntimeException($message);
     };
-    $path = static function ($value, $windows = false) use ($fail) {
+    $path = static function ($value, $host = false, $existing = false) use ($fail) {
         if (! is_string($value) || $value === '' || preg_match('/[\x00-\x1f]/', $value)) {
             $fail('Invalid storage path.');
         }
-        if ($windows && (preg_match('~^[a-zA-Z]:~', $value)
-            || preg_match('~^/(?:run/desktop/mnt/host|host_mnt)/[a-zA-Z](?:/|$)~', $value))) {
-            $value = str_replace('\\', '/', $value);
+        // Only inspect output from a verified Desktop engine may use these VM aliases.
+        if ($existing && getenv('FAST_WORDPRESS_DOCKER_DESKTOP') === '1') {
             $value = preg_replace('~^/(?:run/desktop/mnt/host|host_mnt)/([a-zA-Z])(?=/|$)~', '$1:', $value);
+            if (strpos($value, '/host_mnt/') === 0) {
+                $value = substr($value, strlen('/host_mnt'));
+            }
         }
-        $drive_path = $windows && preg_match('~^[a-zA-Z]:/~', $value);
+        if ($host && preg_match('~^[a-zA-Z]:~', $value)) {
+            $value = str_replace('\\', '/', $value);
+        }
+        $drive_path = $host && preg_match('~^[a-zA-Z]:/~', $value);
         if (! $drive_path && substr($value, 0, 1) !== '/') {
             $fail('Storage paths must be absolute; use resolved Compose JSON.');
         }
-        if (strpos($value, '//') === 0 || preg_match('~(?:^|/)\.\.?(?:/|$)~', $value)) {
+        if (strpos($value, '//') !== false || strpos($value, '\\') !== false
+            || preg_match('~(?:^|/)\.\.?(?:/|$)~', $value)) {
             $fail('Unsupported ambiguous storage path.');
         }
-        $value = rtrim(preg_replace('~/+~', '/', $value), '/');
-        return $drive_path ? strtolower($value) : ($value === '' ? '/' : $value);
+        $value = rtrim($value, '/');
+        // Windows can enable case-sensitive directories; only the drive letter is folded.
+        return $drive_path ? strtolower($value[0]) . substr($value, 1) : ($value === '' ? '/' : $value);
     };
-    $relevant = static function ($target) {
-        $content = '/var/www/html/wp-content';
-        return $target === '/' || $target === $content
-            || strpos($content, $target . '/') === 0
-            || strpos($target, $content . '/') === 0;
+    $relevant = static function ($target) use ($fail) {
+        $core = '/var/www/html';
+        if ($target === $core || $target === $core . '/wp-content') {
+            return true;
+        }
+        if ($target === '/' || strpos($core, $target . '/') === 0
+            || strpos($target, $core . '/') === 0) {
+            $fail('Cannot verify overlapping WordPress storage mounts.');
+        }
+        return false;
     };
     $keys = static function ($object, $allowed) use ($fail) {
         if (! is_object($object) || array_diff(array_keys(get_object_vars($object)), $allowed)
@@ -70,14 +82,14 @@
             if (! $relevant($target)) {
                 continue;
             }
-            if (isset($existing[$target]) || ! isset($mount->Type, $mount->RW) || ! is_bool($mount->RW)) {
+            if (isset($existing[$target]) || ! isset($mount->Type, $mount->RW) || $mount->RW !== true) {
                 $fail('Invalid or duplicate existing content mount.');
             }
             if ($mount->Type === 'bind') {
                 if (isset($mount->Propagation) && ! in_array($mount->Propagation, array('', 'rprivate'), true)) {
                     $fail('Unsupported existing bind propagation.');
                 }
-                $identity = array('bind', $path($mount->Source ?? null, true), '', ! $mount->RW);
+                $identity = array('bind', $path($mount->Source ?? null, true, true), '', false);
             } elseif ($mount->Type === 'volume') {
                 if (! isset($mount->Name) || ! is_string($mount->Name) || $mount->Name === ''
                     || (isset($mount->Driver) && $mount->Driver !== 'local')) {
@@ -89,7 +101,7 @@
                     $fail('Cannot verify the existing volume subpath.');
                 }
                 $suffix = $subpath($match[1] ?? '');
-                if (isset($mount->SubPath) && $subpath($mount->SubPath) !== $suffix) {
+                if ($suffix !== '' || (property_exists($mount, 'SubPath') && $subpath($mount->SubPath) !== '')) {
                     $fail('Conflicting existing volume subpath metadata.');
                 }
                 $identity = array('volume', $mount->Name, $suffix, ! $mount->RW);
@@ -110,7 +122,7 @@
             }
             $keys($mount, array('type', 'source', 'target', 'read_only', 'bind', 'volume', 'consistency'));
             if (isset($desired[$target]) || ! isset($mount->type)
-                || (isset($mount->read_only) && ! is_bool($mount->read_only))
+                || (isset($mount->read_only) && $mount->read_only !== false)
                 || (isset($mount->consistency) && ! in_array($mount->consistency, array('', 'consistent'), true))) {
                 $fail('Invalid or unsupported desired content mount.');
             }
@@ -144,6 +156,9 @@
                         $fail('Unsupported desired volume nocopy option.');
                     }
                     $suffix = $subpath($mount->volume->subpath ?? '');
+                    if ($suffix !== '') {
+                        $fail('Cannot verify WordPress volume subpaths.');
+                    }
                 }
                 $identity = array('volume', $definition->name, $suffix, $mount->read_only ?? false);
             } else {
@@ -153,6 +168,9 @@
         }
         ksort($existing);
         ksort($desired);
+        if (count($existing) !== 2 || count($desired) !== 2) {
+            $fail('Both WordPress core and wp-content storage must be explicit.');
+        }
         if ($existing !== $desired) {
             $fail('WordPress content storage mapping would change and may hide existing uploads.');
         }
