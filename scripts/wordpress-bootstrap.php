@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/wordpress-https.php';
+require_once __DIR__ . '/perfmatters-http.php';
 require_once __DIR__ . '/default-admin-guardian.php';
 require_once __DIR__ . '/mailpit-wp-mail.php';
 
