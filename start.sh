@@ -39,7 +39,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 assert_wordpress_storage() {
-    local container_ids configuration validator container_id mounts image engine_os docker_desktop=0
+    local container_ids configuration validator container_id mounts image image_reference engine_os docker_desktop=0
     container_ids="$(docker compose ps --all --quiet wordpress)" || {
         echo "ERROR: cannot inspect the existing WordPress service. Startup cancelled." >&2
         return 1
@@ -63,7 +63,30 @@ assert_wordpress_storage() {
             echo "ERROR: cannot identify the existing WordPress image. Startup cancelled." >&2
             return 1
         fi
-        # Use the cached image without mounting site data or starting WordPress.
+
+        if ! docker image inspect -- "$image" >/dev/null 2>&1; then
+            image_reference="$(docker inspect --format '{{.Config.Image}}' "$container_id")" || return 1
+            if [ -z "$image_reference" ]; then
+                echo "ERROR: cannot identify the WordPress image reference. Startup cancelled." >&2
+                return 1
+            fi
+            if ! image="$(docker image inspect --format '{{.Id}}' -- "$image_reference" 2>/dev/null)"; then
+                echo "WordPress image is missing. Rebuilding it for the storage check..."
+                if ! PHP_VERSION="${previous_php_version:-$php_version}" docker compose build wordpress; then
+                    echo "ERROR: cannot rebuild the WordPress image. The existing container was not recreated." >&2
+                    return 1
+                fi
+                image="$(docker image inspect --format '{{.Id}}' -- "$image_reference")" || {
+                    echo "ERROR: WordPress image is still unavailable. The existing container was not recreated." >&2
+                    return 1
+                }
+            fi
+            if [[ ! "$image" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                echo "ERROR: cannot identify the replacement WordPress image. Startup cancelled." >&2
+                return 1
+            fi
+        fi
+
         if ! printf '%s\n%s\n' "$mounts" "$configuration" | docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges --env "FAST_WORDPRESS_DOCKER_DESKTOP=$docker_desktop" -i --entrypoint php "$image" -r "$validator"; then
             echo "ERROR: WordPress storage check failed. The existing container was not recreated." >&2
             return 1

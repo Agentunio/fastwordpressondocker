@@ -20,7 +20,8 @@ TLS_ENV = TLS_ENV.replace("COMPOSE_PROFILES=redis\n", "COMPOSE_PROFILES=redis,ht
 class LauncherTests(unittest.TestCase):
     def launch(self, answers, initial=None, fail_trust=False, fail_up=False, environment=None,
                interrupt_at=None, interrupt_signal=signal.SIGINT, fail_before_compose=False,
-               fail_rollback=False, existing_storage=False, fail_storage=None, engine_os="Linux"):
+               fail_rollback=False, existing_storage=False, fail_storage=None, engine_os="Linux",
+               missing_image=False, missing_tag=False, manual_restore=False):
         with tempfile.TemporaryDirectory(prefix="fwd-launcher-test-") as directory:
             project = Path(directory)
             shutil.copy2(ROOT / "start.sh", project / "start.sh")
@@ -57,13 +58,38 @@ fi
 if [[ "$*" == 'inspect --format '* ]]; then
     if [ "$FWD_TEST_FAIL_STORAGE" = inspect ]; then exit 5; fi
     if [[ "$*" == *'.Mounts'* ]]; then echo '[]'
+    elif [[ "$*" == *'.Config.Image'* ]]; then
+        if [ "$FWD_TEST_FAIL_STORAGE" = image-reference ]; then exit 5; fi
+        echo test-wordpress
     elif [ "$FWD_TEST_FAIL_STORAGE" = image ]; then echo invalid-image
     else printf 'sha256:%064d\n' 0
     fi
     exit 0
 fi
+if [[ "$*" == 'image inspect '* ]]; then
+    if [[ "$*" == *'sha256:'* ]]; then
+        [ "$FWD_TEST_MISSING_IMAGE" != 1 ]
+        exit $?
+    fi
+    if [ "$FWD_TEST_MISSING_TAG" = 1 ] && [ ! -f rebuilt ]; then exit 5; fi
+    if [ "$FWD_TEST_FAIL_STORAGE" = rebuilt-image ]; then exit 5; fi
+    if [ "$FWD_TEST_FAIL_STORAGE" = fallback-id ]; then echo invalid-image
+    else printf 'sha256:%064d\n' 1
+    fi
+    exit 0
+fi
+if [[ "$*" == 'compose build wordpress' ]]; then
+    printf 'build-php=%s\n' "$PHP_VERSION" >> calls
+    if [ "$FWD_TEST_FAIL_STORAGE" = build ]; then exit 5; fi
+    touch rebuilt
+    exit 0
+fi
 if [[ "$*" == 'run '* ]]; then
     cat >/dev/null
+    if [ "$FWD_TEST_MISSING_IMAGE" = 1 ] && [[ "$*" == *"sha256:$(printf '%064d' 0)"* ]]; then
+        echo 'No such image' >&2
+        exit 5
+    fi
     if [ "$FWD_TEST_FAIL_STORAGE" = validator ]; then exit 5; fi
     exit 0
 fi
@@ -111,8 +137,12 @@ exec """ + shutil.which("chmod") + ' "$@"\n')
             env["FWD_TEST_EXISTING_STORAGE"] = "1" if existing_storage else "0"
             env["FWD_TEST_FAIL_STORAGE"] = fail_storage or ""
             env["FWD_TEST_ENGINE_OS"] = engine_os
+            env["FWD_TEST_MISSING_IMAGE"] = "1" if missing_image else "0"
+            env["FWD_TEST_MISSING_TAG"] = "1" if missing_tag else "0"
             env["PATH"] = str(project / "bin") + os.pathsep + env["PATH"]
             command = ["bash", "./start.sh"]
+            if manual_restore:
+                command.append("--manual-restore")
             if interrupt_at:
                 with subprocess.Popen(command, cwd=project, env=env, stdin=subprocess.PIPE,
                                       text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -314,6 +344,54 @@ exec """ + shutil.which("chmod") + ' "$@"\n')
                 result, _, calls = self.launch("1\n", OLD_ENV, existing_storage=True, engine_os=engine)
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertIn("--env FAST_WORDPRESS_DOCKER_DESKTOP=" + mode, calls)
+
+    def test_storage_uses_cached_tag_when_original_image_is_missing(self):
+        result, _, calls = self.launch("1\n", OLD_ENV, existing_storage=True, missing_image=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--entrypoint php sha256:" + "0" * 63 + "1", calls)
+        self.assertNotIn("compose build wordpress", calls)
+
+    def test_storage_rebuilds_missing_tag_before_validation(self):
+        result, _, calls = self.launch("1\n", OLD_ENV, existing_storage=True,
+                                       missing_image=True, missing_tag=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(calls.count("compose build wordpress"), 1)
+        self.assertLess(calls.index("compose build wordpress"), calls.index("run --rm"))
+        self.assertLess(calls.index("run --rm"), calls.index("stop https"))
+        self.assertIn("--entrypoint php sha256:" + "0" * 63 + "1", calls)
+
+    def test_storage_recovery_failure_preserves_existing_configuration(self):
+        for stage in ("image-reference", "build", "rebuilt-image", "fallback-id", "validator"):
+            with self.subTest(stage=stage):
+                result, saved, calls = self.launch("1\n", TLS_ENV, existing_storage=True,
+                                                  missing_image=True, missing_tag=True, fail_storage=stage)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(saved, TLS_ENV)
+                self.assertNotIn(" up ", calls)
+                self.assertNotIn(" stop", calls)
+                self.assertNotIn("TRUST", calls)
+
+    def test_manual_restore_with_custom_ports_and_missing_image(self):
+        result, saved, calls = self.launch("2\n4\n1\n1\n1\n1\n2\n81\n2\n8181\n2\n8111\n",
+                                          existing_storage=True, missing_image=True,
+                                          missing_tag=True, manual_restore=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for setting in ("PHP_VERSION=8.4", "WORDPRESS_PORT=81", "PHPMYADMIN_PORT=8181",
+                        "MAILPIT_PORT=8111", "WORDPRESS_HTTPS=0", "WORDPRESS_OBJECT_CACHE=none"):
+            self.assertIn(setting + "\n", saved)
+        self.assertLess(calls.index("run --rm"), calls.index(" up "))
+        self.assertLess(calls.index(" up "), calls.index("bash /scripts/restore-manual.sh"))
+
+    def test_storage_rebuild_preserves_previous_php_when_new_settings_are_rejected(self):
+        result, saved, calls = self.launch("2\n2\n1\n1\n1\n1\n1\n1\n1\n", OLD_ENV,
+                                          existing_storage=True, missing_image=True,
+                                          missing_tag=True, fail_storage="validator")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Starting WordPress with PHP 8.3", result.stdout)
+        self.assertIn("build-php=8.4\n", calls)
+        self.assertEqual(saved, OLD_ENV)
+        self.assertNotIn(" up ", calls)
+        self.assertNotIn(" stop", calls)
 
 
 if __name__ == "__main__":
