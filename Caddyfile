@@ -1,7 +1,12 @@
 {
 	auto_https disable_redirects
 	skip_install_trust
+	default_sni 127.0.0.1
 	servers {
+		listener_wrappers {
+			http_redirect
+			tls
+		}
 		protocols {$FWD_HTTP_PROTOCOLS}
 	}
 }
